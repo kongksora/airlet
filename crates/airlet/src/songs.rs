@@ -1,4 +1,7 @@
-use crate::{CypherNotation, NoteEvent, Pitch, Score};
+use crate::{
+    NoteEvent, Pitch, Score,
+    score::{ComposedScore, Dur, ScoreBuilder},
+};
 
 pub mod air {
     use super::*;
@@ -15,63 +18,66 @@ pub mod air {
         Score::new("鳥の詩 intro", intro_melody())
     }
 
-    pub fn intro_melody() -> Vec<NoteEvent> {
-        let music = CypherNotation::new(Pitch::D);
-        let midi = |note, oct| music.midi(note, oct);
+    pub fn intro_score() -> ComposedScore {
+        ScoreBuilder::cypher("鳥の詩 intro", Pitch::D)
+            .tempo_quarter_millis(QN)
+            .voice("melody", |v| {
+                // 第一小节
+                v.n(6, 0, Dur::QUARTER + Dur::EIGHTH)
+                    .n(7, 0, Dur::EIGHTH)
+                    .n(1, 1, Dur::EIGHTH)
+                    .n(5, 1, Dur::EIGHTH);
+                // 第二小节
+                v.n(3, 1, Dur::QUARTER)
+                    .n(3, 1, Dur::EIGHTH)
+                    .n(2, 1, Dur::SIXTEENTH)
+                    .n(3, 1, Dur::SIXTEENTH + Dur::QUARTER)
+                    .rest(Dur::QUARTER);
+                // 第三小节
+                v.rest(Dur::QUARTER)
+                    .n(2, 1, Dur::EIGHTH)
+                    .n(3, 1, Dur::EIGHTH)
+                    .n(5, 1, Dur::EIGHTH)
+                    .n(1, 1, Dur::EIGHTH)
+                    .n(7, 0, Dur::EIGHTH)
+                    .n(1, 1, Dur::EIGHTH);
+                // 第四小节
+                v.n(7, 0, Dur::QUARTER)
+                    .n(7, 0, Dur::EIGHTH)
+                    .n(6, 0, Dur::SIXTEENTH)
+                    .n(3, 0, Dur::SIXTEENTH + Dur::QUARTER)
+                    .rest(Dur::QUARTER);
+                // 第五小节
+                v.rest(Dur::QUARTER + Dur::EIGHTH)
+                    .n(6, 0, Dur::QUARTER)
+                    .n(7, 0, Dur::EIGHTH)
+                    .n(1, 1, Dur::EIGHTH)
+                    .n(5, 1, Dur::EIGHTH);
+                // 第六小节
+                v.n(3, 1, Dur::QUARTER)
+                    .n(3, 1, Dur::EIGHTH)
+                    .n(2, 1, Dur::SIXTEENTH)
+                    .n(3, 1, Dur::SIXTEENTH + Dur::QUARTER)
+                    .rest(Dur::QUARTER);
+                // 第七小节
+                v.rest(Dur::QUARTER)
+                    .n(2, 1, Dur::EIGHTH)
+                    .n(3, 1, Dur::EIGHTH)
+                    .n(5, 1, Dur::EIGHTH)
+                    .n(3, 1, Dur::EIGHTH)
+                    .n(5, 1, Dur::EIGHTH)
+                    .n(1, 2, Dur::EIGHTH);
+                // 第八小节
+                v.n(7, 1, Dur::EIGHTH + Dur::SIXTEENTH)
+                    .n(6, 1, Dur::EIGHTH + Dur::SIXTEENTH)
+                    .n(3, 1, Dur::QUARTER + Dur::EIGHTH)
+                    .rest(Dur::EIGHTH)
+                    .n(2, 1, Dur::EIGHTH);
+            })
+            .finish()
+    }
 
-        vec![
-            // 第一小节
-            NoteEvent::new(midi(6, 0), QN + EN),
-            NoteEvent::new(midi(7, 0), EN),
-            NoteEvent::new(midi(1, 1), EN),
-            NoteEvent::new(midi(5, 1), EN),
-            // 第二小节
-            NoteEvent::new(midi(3, 1), QN),
-            NoteEvent::new(midi(3, 1), EN),
-            NoteEvent::new(midi(2, 1), SN),
-            NoteEvent::new(midi(3, 1), SN + QN),
-            NoteEvent::rest(QN),
-            // 第三小节
-            NoteEvent::rest(QN),
-            NoteEvent::new(midi(2, 1), EN),
-            NoteEvent::new(midi(3, 1), EN),
-            NoteEvent::new(midi(5, 1), EN),
-            NoteEvent::new(midi(1, 1), EN),
-            NoteEvent::new(midi(7, 0), EN),
-            NoteEvent::new(midi(1, 1), EN),
-            // 第四小节
-            NoteEvent::new(midi(7, 0), QN),
-            NoteEvent::new(midi(7, 0), EN),
-            NoteEvent::new(midi(6, 0), SN),
-            NoteEvent::new(midi(3, 0), SN + QN),
-            NoteEvent::rest(QN),
-            // 第五小节
-            NoteEvent::rest(QN + EN),
-            NoteEvent::new(midi(6, 0), QN),
-            NoteEvent::new(midi(7, 0), EN),
-            NoteEvent::new(midi(1, 1), EN),
-            NoteEvent::new(midi(5, 1), EN),
-            // 第六小节
-            NoteEvent::new(midi(3, 1), QN),
-            NoteEvent::new(midi(3, 1), EN),
-            NoteEvent::new(midi(2, 1), SN),
-            NoteEvent::new(midi(3, 1), SN + QN),
-            NoteEvent::rest(QN),
-            // 第七小节
-            NoteEvent::rest(QN),
-            NoteEvent::new(midi(2, 1), EN),
-            NoteEvent::new(midi(3, 1), EN),
-            NoteEvent::new(midi(5, 1), EN),
-            NoteEvent::new(midi(3, 1), EN),
-            NoteEvent::new(midi(5, 1), EN),
-            NoteEvent::new(midi(1, 2), EN),
-            // 第八小节
-            NoteEvent::new(midi(7, 1), EN + SN),
-            NoteEvent::new(midi(6, 1), EN + SN),
-            NoteEvent::new(midi(3, 1), QN + EN),
-            NoteEvent::rest(EN),
-            NoteEvent::new(midi(2, 1), EN),
-            // 第九小节
-        ]
+    pub fn intro_melody() -> Vec<NoteEvent> {
+        intro_score().to_note_events()
     }
 }

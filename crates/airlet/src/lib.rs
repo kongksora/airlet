@@ -6,6 +6,7 @@ use std::{
 use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
 pub mod model;
+pub mod score;
 pub mod songs;
 
 use model::MusicBoxModel;
@@ -675,6 +676,77 @@ mod tests {
     #[test]
     fn air_intro_track_keeps_current_length() {
         assert_eq!(songs::air::intro().events.len(), 43);
+    }
+
+    #[test]
+    fn air_intro_builder_preserves_legacy_durations() {
+        let events = songs::air::intro_melody();
+        assert_eq!(events.len(), 43);
+        assert_eq!(
+            events[0],
+            NoteEvent::new(CypherNotation::new(Pitch::D).midi(6, 0), 750)
+        );
+        assert_eq!(
+            events[7],
+            NoteEvent::new(CypherNotation::new(Pitch::D).midi(3, 1), 625)
+        );
+        assert_eq!(events[8], NoteEvent::rest(500));
+        assert_eq!(
+            events.last(),
+            Some(&NoteEvent::new(
+                CypherNotation::new(Pitch::D).midi(2, 1),
+                250
+            ))
+        );
+    }
+
+    #[test]
+    fn score_builder_expands_grace_notes_and_triplets() {
+        use crate::score::{Dur, EventKind, ScoreBuilder, g};
+
+        let music = CypherNotation::new(Pitch::D);
+        let score = ScoreBuilder::cypher("test", Pitch::D)
+            .voice("melody", |v| {
+                v.n(1, 0, Dur::QUARTER)
+                    .grace_before([g(music.midi(7, -1), Dur::SIXTEENTH)]);
+                v.triplet(|t| {
+                    t.n(1, 0).n(2, 0).n(3, 0);
+                });
+            })
+            .finish();
+        let timeline = score.expand();
+
+        assert_eq!(Dur::QUARTER.split_even(3), vec![Dur::from_ticks(320); 3]);
+        assert_eq!(timeline.events[0].kind, EventKind::Grace);
+        assert_eq!(timeline.events[0].onset.0, -Dur::SIXTEENTH.ticks());
+        assert_eq!(timeline.events[1].kind, EventKind::Main);
+        assert_eq!(timeline.events[2].onset.0, Dur::QUARTER.ticks());
+        assert_eq!(timeline.events[2].duration, Dur::QUARTER.tuplet(3, 2));
+    }
+
+    #[test]
+    fn duration_and_tempo_are_decoupled() {
+        use crate::score::{Dur, ScoreBuilder};
+
+        let slow = ScoreBuilder::cypher("slow", Pitch::D)
+            .tempo_quarter_millis(600)
+            .voice("melody", |v| {
+                v.n(1, 0, Dur::QUARTER);
+            })
+            .finish();
+        let fast = ScoreBuilder::cypher("fast", Pitch::D)
+            .tempo_quarter_millis(300)
+            .voice("melody", |v| {
+                v.n(1, 0, Dur::QUARTER);
+            })
+            .finish();
+
+        assert_eq!(
+            slow.expand().events[0].duration,
+            fast.expand().events[0].duration
+        );
+        assert_eq!(slow.to_note_events()[0].millis, 600);
+        assert_eq!(fast.to_note_events()[0].millis, 300);
     }
 
     #[test]
