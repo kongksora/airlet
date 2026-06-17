@@ -606,7 +606,7 @@ impl ModelPlaybackConfig {
             note_tail: Duration::from_millis(1200),
             note_gain: 0.17,
             final_tail: Duration::from_millis(800),
-            model: MusicBoxModel::modal_a_dry_probe(),
+            model: MusicBoxModel::a_dry_from_json(),
             seed: 42,
         }
     }
@@ -884,5 +884,26 @@ mod tests {
                 .iter()
                 .all(|hint| hint.axial_position.is_finite())
         );
+    }
+
+    #[test]
+    fn bundled_a_dry_preset_round_trips() {
+        let from_json = MusicBoxModel::a_dry_from_json();
+        let from_rust = MusicBoxModel::modal_a_dry_probe();
+
+        assert_eq!(
+            from_json.tines.partials.len(),
+            from_rust.tines.partials.len()
+        );
+        assert_eq!(from_json.exciter.click_gain, from_rust.exciter.click_gain);
+
+        let json = from_json.to_json_string().unwrap();
+        let round_trip = MusicBoxModel::from_json_str(&json).unwrap();
+
+        assert_eq!(
+            round_trip.tines.partials.len(),
+            from_json.tines.partials.len()
+        );
+        assert_eq!(round_trip.body, from_json.body);
     }
 }
