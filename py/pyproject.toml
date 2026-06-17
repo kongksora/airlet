@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 airlet-analyze-reference = "airlet_audio_lab.analyze_reference:main"
+airlet-render-air-probe = "airlet_audio_lab.render_air_probe:main"
 airlet-synth-probe = "airlet_audio_lab.synth_probe:main"
 
 [build-system]
