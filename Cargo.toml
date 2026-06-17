@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/airlet"]
+resolver = "3"
+
+[package]
+name = "airlet-app"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "airlet"
+path = "src/main.rs"
+
+[dependencies]
+airlet = { path = "crates/airlet" }
+rodio = "0.22.2"
