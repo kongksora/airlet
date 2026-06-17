@@ -2,6 +2,12 @@
 
 Fast Python tools for reference analysis and synthesis probes.
 
+Current best full-song probe:
+
+```bash
+uv run --project py airlet-render-air-probe py/out/analysis/A/partials.csv --preset a-dry --out py/out/air_probes/air_from_A_v3_dry_preset.wav
+```
+
 ## Commands
 
 ```bash

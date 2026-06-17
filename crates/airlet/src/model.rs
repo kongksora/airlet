@@ -8,19 +8,23 @@ pub struct MusicBoxModel {
 
 impl MusicBoxModel {
     pub fn modal_a_probe() -> Self {
+        Self::modal_a_dry_probe()
+    }
+
+    pub fn modal_a_dry_probe() -> Self {
         Self {
             exciter: StrikeParams {
                 attack_seconds: 0.003,
                 click_gain: 0.035,
                 click_decay_seconds: 0.006,
-                noise_gain: 0.003,
+                noise_gain: 0.002,
             },
             tines: TineBankParams {
                 partials: Vec::new(),
-                base_decay_seconds: 0.55,
-                low_decay_boost: 0.25,
-                high_decay_power: 0.85,
-                pitch_decay_power: 0.35,
+                base_decay_seconds: 0.25,
+                low_decay_boost: 0.1,
+                high_decay_power: 1.1,
+                pitch_decay_power: 0.5,
                 amplitude_power: 0.85,
                 detune_cents: 1.5,
                 stretch: 0.0004,
