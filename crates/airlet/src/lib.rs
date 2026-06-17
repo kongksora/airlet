@@ -750,6 +750,36 @@ mod tests {
     }
 
     #[test]
+    fn score_dsl_supports_patterns_velocity_ties_and_repeats() {
+        use crate::score::{Dur, EventKind, ScoreBuilder, Tempo, Tie};
+
+        let composition = ScoreBuilder::cypher("dsl", Pitch::D)
+            .voice("melody", |v| {
+                let pattern = Dur::WHOLE.pattern([1, 1, 2]);
+                v.durs(pattern, |v, dur| {
+                    v.n(1, 0, dur).velocity(0.8).slur();
+                });
+                v.tuplet(5, Dur::QUARTER, |t| {
+                    t.n(1, 0).n(2, 0).n(3, 0).n(4, 0).n(5, 0);
+                });
+                v.n(6, 0, Dur::QUARTER).tie(Tie::Start);
+                v.repeat(2, |v| {
+                    v.rest(Dur::EIGHTH);
+                });
+            })
+            .finish();
+        let timeline = composition.with_tempo(Tempo::bpm(120.0)).expand();
+
+        assert_eq!(timeline.events[0].duration, Dur::QUARTER);
+        assert_eq!(timeline.events[2].duration, Dur::HALF);
+        assert_eq!(timeline.events[0].velocity, 0.8);
+        assert!(timeline.events[0].slur);
+        assert_eq!(timeline.events[3].duration, Dur::QUARTER.tuplet(5, 1));
+        assert_eq!(timeline.events[8].tie, Tie::Start);
+        assert_eq!(timeline.events[8].kind, EventKind::Main);
+    }
+
+    #[test]
     fn render_is_deterministic_for_same_seed() {
         let sample_rate = NonZero::new(8_000).unwrap();
         let config = RenderConfig {

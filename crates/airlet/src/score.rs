@@ -59,6 +59,27 @@ impl Dur {
             count
         ]
     }
+
+    pub fn pattern(self, weights: impl IntoIterator<Item = i64>) -> Vec<Self> {
+        let weights: Vec<_> = weights.into_iter().collect();
+        assert!(!weights.is_empty(), "duration pattern must not be empty");
+        assert!(
+            weights.iter().all(|weight| *weight > 0),
+            "duration pattern weights must be positive"
+        );
+        let total: i64 = weights.iter().sum();
+        assert!(
+            self.ticks % total == 0,
+            "duration cannot be split by this pattern"
+        );
+        let unit = self.ticks / total;
+        weights
+            .into_iter()
+            .map(|weight| Self {
+                ticks: unit * weight,
+            })
+            .collect()
+    }
 }
 
 impl std::ops::Add for Dur {
@@ -149,6 +170,8 @@ impl ComposedScore {
                                 velocity: grace.velocity,
                                 voice: voice.name.clone(),
                                 kind: EventKind::Grace,
+                                tie: Tie::None,
+                                slur: false,
                             });
                             grace_cursor.0 += grace.dur.ticks();
                         }
@@ -160,6 +183,8 @@ impl ComposedScore {
                             velocity: note.velocity,
                             voice: voice.name.clone(),
                             kind: EventKind::Main,
+                            tie: note.tie,
+                            slur: note.slur,
                         });
                         cursor.0 += note.dur.ticks();
                     }
@@ -214,6 +239,16 @@ pub struct ComposedNote {
     pub dur: Dur,
     pub velocity: f32,
     pub grace_before: Vec<GraceNote>,
+    pub tie: Tie,
+    pub slur: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tie {
+    None,
+    Start,
+    Continue,
+    End,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -237,6 +272,8 @@ pub struct TimelineEvent {
     pub velocity: f32,
     pub voice: String,
     pub kind: EventKind,
+    pub tie: Tie,
+    pub slur: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,6 +331,8 @@ impl VoiceBuilder {
             dur,
             velocity: 1.0,
             grace_before: Vec::new(),
+            tie: Tie::None,
+            slur: false,
         }));
         self
     }
@@ -311,14 +350,70 @@ impl VoiceBuilder {
         self
     }
 
+    pub fn velocity(&mut self, velocity: f32) -> &mut Self {
+        let Some(ScoreItem::Note(note)) = self.items.last_mut() else {
+            panic!("velocity must follow a note");
+        };
+        note.velocity = velocity;
+        self
+    }
+
+    pub fn tie(&mut self, tie: Tie) -> &mut Self {
+        let Some(ScoreItem::Note(note)) = self.items.last_mut() else {
+            panic!("tie must follow a note");
+        };
+        note.tie = tie;
+        self
+    }
+
+    pub fn slur(&mut self) -> &mut Self {
+        let Some(ScoreItem::Note(note)) = self.items.last_mut() else {
+            panic!("slur must follow a note");
+        };
+        note.slur = true;
+        self
+    }
+
     pub fn triplet(&mut self, build: impl FnOnce(&mut TupletBuilder)) -> &mut Self {
+        self.tuplet(3, Dur::QUARTER * 2, build)
+    }
+
+    pub fn tuplet(
+        &mut self,
+        count: usize,
+        total: Dur,
+        build: impl FnOnce(&mut TupletBuilder),
+    ) -> &mut Self {
+        assert!(count > 0, "tuplet count must be non-zero");
+        assert!(
+            total.ticks() % count as i64 == 0,
+            "tuplet duration cannot be evenly divided"
+        );
         let mut tuplet = TupletBuilder {
             notation: self.notation,
-            dur: Dur::QUARTER.tuplet(3, 2),
+            dur: Dur::from_ticks(total.ticks() / count as i64),
             items: Vec::new(),
         };
         build(&mut tuplet);
         self.items.extend(tuplet.items);
+        self
+    }
+
+    pub fn repeat(&mut self, times: usize, build: impl Fn(&mut VoiceBuilder)) -> &mut Self {
+        for _ in 0..times {
+            build(self);
+        }
+        self
+    }
+
+    pub fn durs(
+        &mut self,
+        durs: impl IntoIterator<Item = Dur>,
+        mut build: impl FnMut(&mut VoiceBuilder, Dur),
+    ) -> &mut Self {
+        for dur in durs {
+            build(self, dur);
+        }
         self
     }
 }
@@ -336,6 +431,8 @@ impl TupletBuilder {
             dur: self.dur,
             velocity: 1.0,
             grace_before: Vec::new(),
+            tie: Tie::None,
+            slur: false,
         }));
         self
     }
