@@ -5,6 +5,7 @@ use std::{
 
 use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
+pub mod model;
 pub mod songs;
 
 // S(t) = amp * exp(-k*t) * sin(2πf*t + beta*exp(-gamma*t)*sin(2πm*t) + phi0)
