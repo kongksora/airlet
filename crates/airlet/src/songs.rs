@@ -1,4 +1,4 @@
-use crate::{CypherNotation, NoteEvent, Pitch};
+use crate::{CypherNotation, NoteEvent, Pitch, Score};
 
 pub mod air {
     use super::*;
@@ -10,6 +10,10 @@ pub mod air {
     pub const QN: u64 = 500;
     pub const EN: u64 = QN / 2;
     pub const SN: u64 = QN / 4;
+
+    pub fn intro() -> Score {
+        Score::new("鳥の詩 intro", intro_melody())
+    }
 
     pub fn intro_melody() -> Vec<NoteEvent> {
         let music = CypherNotation::new(Pitch::D);

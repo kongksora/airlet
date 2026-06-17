@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
+
 pub mod songs;
 
 // S(t) = amp * exp(-k*t) * sin(2πf*t + beta*exp(-gamma*t)*sin(2πm*t) + phi0)
@@ -24,6 +26,18 @@ const M_FACTOR: f32 = 20.0;
 
 impl Single {
     pub fn new(freq: f32, amp: f32) -> Self {
+        Self::new_with_phase(
+            freq,
+            amp,
+            rand::random::<f32>() * 2.0 * std::f32::consts::PI,
+        )
+    }
+
+    fn new_with_rng<R: Rng + ?Sized>(freq: f32, amp: f32, rng: &mut R) -> Self {
+        Self::new_with_phase(freq, amp, rng.random::<f32>() * 2.0 * std::f32::consts::PI)
+    }
+
+    fn new_with_phase(freq: f32, amp: f32, phi: f32) -> Self {
         Self {
             freq,
             amp,
@@ -31,8 +45,37 @@ impl Single {
             beta: BETA_FACTOR / freq,
             gamma: freq * GAMMA_FACTOR,
             m: freq * M_FACTOR,
-            phi: rand::random::<f32>() * 2.0 * std::f32::consts::PI,
+            phi,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TineParams {
+    pub partials: Vec<f32>,
+    pub attack: f32,
+    pub output_drive: f32,
+    pub output_gain: f32,
+    pub detune_offset: f32,
+    pub detune_random_span: f32,
+}
+
+impl TineParams {
+    pub fn legacy() -> Self {
+        Self {
+            partials: vec![1.0, 2.99, 5.01, 7.02, 10.03, 12.04, 15.05, 17.06, 20.07],
+            attack: 0.002,
+            output_drive: 1.4,
+            output_gain: 0.4,
+            detune_offset: -0.005,
+            detune_random_span: 0.001,
+        }
+    }
+}
+
+impl Default for TineParams {
+    fn default() -> Self {
+        Self::legacy()
     }
 }
 
@@ -42,20 +85,49 @@ pub struct BoxTine {
     sample_rate: NonZero<u32>,
     duration_samples: usize,
     current_sample: usize,
+    params: TineParams,
 }
 
 impl BoxTine {
     pub fn new(freq: f32, sample_rate: NonZero<u32>, duration: Duration) -> Self {
+        Self::new_with_params(freq, sample_rate, duration, TineParams::legacy())
+    }
+
+    pub fn new_with_params(
+        freq: f32,
+        sample_rate: NonZero<u32>,
+        duration: Duration,
+        params: TineParams,
+    ) -> Self {
+        let mut rng = rand::rng();
+        Self::new_with_rng(freq, sample_rate, duration, params, &mut rng)
+    }
+
+    pub fn new_with_seed(
+        freq: f32,
+        sample_rate: NonZero<u32>,
+        duration: Duration,
+        params: TineParams,
+        seed: u64,
+    ) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+        Self::new_with_rng(freq, sample_rate, duration, params, &mut rng)
+    }
+
+    pub fn new_with_rng<R: Rng + ?Sized>(
+        freq: f32,
+        sample_rate: NonZero<u32>,
+        duration: Duration,
+        params: TineParams,
+        rng: &mut R,
+    ) -> Self {
         let mut modes = Vec::new();
 
-        let freq = freq * (1.0 + rand::random::<f32>() * 0.001 - 0.005);
-        let partials = [
-            1.0, // 基频（最强）
-            2.99, 5.01, 7.02, 10.03, 12.04, 15.05, 17.06, 20.07,
-        ];
+        let freq =
+            freq * (1.0 + rng.random::<f32>() * params.detune_random_span + params.detune_offset);
 
-        for part in &partials {
-            modes.push(Single::new(freq * part, 1.0 / part.powi(2)));
+        for part in &params.partials {
+            modes.push(Single::new_with_rng(freq * part, 1.0 / part.powi(2), rng));
         }
 
         Self {
@@ -63,6 +135,7 @@ impl BoxTine {
             sample_rate,
             duration_samples: (sample_rate.get() as f64 * duration.as_secs_f64()) as usize,
             current_sample: 0,
+            params,
         }
     }
 
@@ -89,7 +162,6 @@ impl Iterator for BoxTine {
 
         let sr = self.sample_rate.get() as f32;
         let t = self.current_sample as f32 / sr;
-        let attack = 0.002;
         let mut out = 0.0;
 
         for m in &mut self.modes {
@@ -100,10 +172,10 @@ impl Iterator for BoxTine {
             out += m.amp * (-m.k * t).exp() * phase.sin();
         }
 
-        let out = (out * 1.4).tanh() * 0.4;
+        let out = (out * self.params.output_drive).tanh() * self.params.output_gain;
 
         self.current_sample += 1;
-        let out = out * smoothstep((t / attack).min(1.0));
+        let out = out * smoothstep((t / self.params.attack).min(1.0));
 
         Some(out)
     }
@@ -186,6 +258,22 @@ pub struct NoteEvent {
     pub millis: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct Score {
+    pub title: &'static str,
+    pub events: Vec<NoteEvent>,
+}
+
+impl Score {
+    pub fn new(title: &'static str, events: Vec<NoteEvent>) -> Self {
+        Self { title, events }
+    }
+
+    pub fn duration(&self) -> Duration {
+        Duration::from_millis(self.events.iter().map(|event| event.millis).sum())
+    }
+}
+
 impl NoteEvent {
     pub const fn rest(millis: u64) -> Self {
         Self {
@@ -220,8 +308,64 @@ impl Default for PlaybackConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Performance {
+    pub score: Score,
+    pub playback: PlaybackConfig,
+    pub tine: TineParams,
+}
+
+impl Performance {
+    pub fn new(score: Score, playback: PlaybackConfig, tine: TineParams) -> Self {
+        Self {
+            score,
+            playback,
+            tine,
+        }
+    }
+
+    pub fn air_intro_legacy() -> Self {
+        Self::new(
+            songs::air::intro(),
+            PlaybackConfig::default(),
+            TineParams::legacy(),
+        )
+    }
+
+    pub fn render_config(&self, sample_rate: NonZero<u32>, seed: u64) -> RenderConfig {
+        RenderConfig {
+            sample_rate,
+            playback: self.playback.clone(),
+            tine: self.tine.clone(),
+            seed,
+        }
+    }
+
+    pub fn render(&self, sample_rate: NonZero<u32>, seed: u64) -> Vec<f32> {
+        render_score(&self.score, &self.render_config(sample_rate, seed))
+    }
+
+    pub fn play_realtime<S: TineSink>(&self, sample_rate: NonZero<u32>, sink: &mut S) {
+        play_performance_realtime(self, sample_rate, sink);
+    }
+}
+
 pub trait TineSink {
     fn add_tine(&mut self, tine: BoxTine, gain: f32);
+}
+
+pub fn play_performance_realtime<S: TineSink>(
+    performance: &Performance,
+    sample_rate: NonZero<u32>,
+    sink: &mut S,
+) {
+    play_events_realtime_with_tine(
+        &performance.score.events,
+        sample_rate,
+        sink,
+        &performance.playback,
+        &performance.tine,
+    );
 }
 
 pub fn play_events_realtime<S: TineSink>(
@@ -230,13 +374,24 @@ pub fn play_events_realtime<S: TineSink>(
     sink: &mut S,
     config: &PlaybackConfig,
 ) {
+    play_events_realtime_with_tine(events, sample_rate, sink, config, &TineParams::legacy());
+}
+
+pub fn play_events_realtime_with_tine<S: TineSink>(
+    events: &[NoteEvent],
+    sample_rate: NonZero<u32>,
+    sink: &mut S,
+    config: &PlaybackConfig,
+    tine_params: &TineParams,
+) {
     let begin = Instant::now();
     let mut total_millis: i64 = 0;
 
     for event in events {
         if !event.is_rest() {
             let freq = midi_to_freq(event.midi_note);
-            let note = BoxTine::new(freq, sample_rate, config.note_tail);
+            let note =
+                BoxTine::new_with_params(freq, sample_rate, config.note_tail, tine_params.clone());
             sink.add_tine(note, config.note_gain);
         }
         total_millis += event.millis as i64;
@@ -247,6 +402,80 @@ pub fn play_events_realtime<S: TineSink>(
     }
 
     std::thread::sleep(config.final_tail);
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderConfig {
+    pub sample_rate: NonZero<u32>,
+    pub playback: PlaybackConfig,
+    pub tine: TineParams,
+    pub seed: u64,
+}
+
+impl RenderConfig {
+    pub fn new(sample_rate: NonZero<u32>) -> Self {
+        Self {
+            sample_rate,
+            playback: PlaybackConfig::default(),
+            tine: TineParams::legacy(),
+            seed: 0xA17E_7001,
+        }
+    }
+}
+
+pub fn render_score(score: &Score, config: &RenderConfig) -> Vec<f32> {
+    render_events(&score.events, config)
+}
+
+pub fn render_events(events: &[NoteEvent], config: &RenderConfig) -> Vec<f32> {
+    let sample_rate = config.sample_rate.get() as f64;
+    let song_millis: u64 = events.iter().map(|event| event.millis).sum();
+    let total_duration =
+        Duration::from_millis(song_millis) + config.playback.note_tail + config.playback.final_tail;
+    let total_samples = (total_duration.as_secs_f64() * sample_rate).ceil() as usize;
+    let mut output = vec![0.0; total_samples];
+    let mut rng = StdRng::seed_from_u64(config.seed);
+    let mut cursor_samples = 0usize;
+
+    for event in events {
+        if !event.is_rest() {
+            let freq = midi_to_freq(event.midi_note);
+            let tine = BoxTine::new_with_rng(
+                freq,
+                config.sample_rate,
+                config.playback.note_tail,
+                config.tine.clone(),
+                &mut rng,
+            );
+
+            for (offset, sample) in tine.enumerate() {
+                if let Some(out) = output.get_mut(cursor_samples + offset) {
+                    *out += sample * config.playback.note_gain;
+                }
+            }
+        }
+
+        cursor_samples += millis_to_samples(event.millis, config.sample_rate);
+    }
+
+    output
+}
+
+pub fn normalize_peak(samples: &mut [f32], peak: f32) {
+    let max = samples
+        .iter()
+        .fold(0.0_f32, |max, sample| max.max(sample.abs()));
+
+    if max > peak && max > 0.0 {
+        let gain = peak / max;
+        for sample in samples {
+            *sample *= gain;
+        }
+    }
+}
+
+fn millis_to_samples(millis: u64, sample_rate: NonZero<u32>) -> usize {
+    ((millis as f64 / 1000.0) * sample_rate.get() as f64).round() as usize
 }
 
 #[cfg(test)]
@@ -260,6 +489,45 @@ mod tests {
 
     #[test]
     fn air_intro_track_keeps_current_length() {
-        assert_eq!(songs::air::intro_melody().len(), 43);
+        assert_eq!(songs::air::intro().events.len(), 43);
+    }
+
+    #[test]
+    fn render_is_deterministic_for_same_seed() {
+        let sample_rate = NonZero::new(8_000).unwrap();
+        let config = RenderConfig {
+            sample_rate,
+            playback: PlaybackConfig {
+                note_tail: Duration::from_millis(100),
+                note_gain: 0.25,
+                final_tail: Duration::from_millis(10),
+            },
+            tine: TineParams::legacy(),
+            seed: 42,
+        };
+        let events = [NoteEvent::new(69, 50), NoteEvent::rest(50)];
+
+        let first = render_events(&events, &config);
+        let second = render_events(&events, &config);
+
+        assert_eq!(first, second);
+        assert!(first.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn performance_render_uses_default_song() {
+        let sample_rate = NonZero::new(8_000).unwrap();
+        let performance = Performance {
+            playback: PlaybackConfig {
+                note_tail: Duration::from_millis(20),
+                note_gain: 0.25,
+                final_tail: Duration::from_millis(5),
+            },
+            ..Performance::air_intro_legacy()
+        };
+        let rendered = performance.render(sample_rate, 7);
+
+        assert!(!rendered.is_empty());
+        assert!(rendered.iter().all(|sample| sample.is_finite()));
     }
 }

@@ -13,4 +13,5 @@ path = "src/main.rs"
 
 [dependencies]
 airlet = { path = "crates/airlet" }
+hound = "3.5.1"
 rodio = "0.22.2"

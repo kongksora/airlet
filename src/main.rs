@@ -1,4 +1,4 @@
-use airlet::{BoxTine, PlaybackConfig, TineSink, play_events_realtime, songs};
+use airlet::{BoxTine, Performance, TineSink};
 use rodio::Source;
 use std::{num::NonZero, time::Duration};
 
@@ -47,11 +47,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         mixer: stream_handle.mixer(),
     };
 
-    play_events_realtime(
-        &songs::air::intro_melody(),
-        sample_rate,
-        &mut sink,
-        &PlaybackConfig::default(),
-    );
+    Performance::air_intro_legacy().play_realtime(sample_rate, &mut sink);
     Ok(())
 }
