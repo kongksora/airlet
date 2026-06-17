@@ -1,52 +1,26 @@
-use airlet::{BoxTine, Performance, TineSink};
-use rodio::Source;
 use std::{num::NonZero, time::Duration};
 
-struct RodioSink<'a> {
-    mixer: &'a rodio::mixer::Mixer,
-}
-
-impl TineSink for RodioSink<'_> {
-    fn add_tine(&mut self, tine: BoxTine, gain: f32) {
-        self.mixer.add(TineSource(tine).amplify(gain));
-    }
-}
-
-struct TineSource(BoxTine);
-
-impl Iterator for TineSource {
-    type Item = f32;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
-    }
-}
-
-impl Source for TineSource {
-    fn current_span_len(&self) -> Option<usize> {
-        Some(self.0.current_span_len())
-    }
-
-    fn channels(&self) -> NonZero<u16> {
-        NonZero::new(1).unwrap()
-    }
-
-    fn sample_rate(&self) -> NonZero<u32> {
-        self.0.sample_rate()
-    }
-
-    fn total_duration(&self) -> Option<Duration> {
-        None
-    }
-}
+use airlet::{
+    engine::Engine,
+    performance::{ModelPreset, PerformancePlan},
+    songs,
+};
+use rodio::buffer::SamplesBuffer;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream_handle = rodio::DeviceSinkBuilder::open_default_sink()?;
     let sample_rate = stream_handle.config().sample_rate();
-    let mut sink = RodioSink {
-        mixer: stream_handle.mixer(),
-    };
+    let plan = PerformancePlan::new(songs::air::intro_composition())
+        .tempo(songs::air::intro_tempo())
+        .model(ModelPreset::ADry);
+    let samples = Engine::new(sample_rate).render(&plan);
+    let duration = Duration::from_secs_f64(samples.len() as f64 / sample_rate.get() as f64);
 
-    Performance::air_intro_legacy().play_realtime(sample_rate, &mut sink);
+    stream_handle.mixer().add(SamplesBuffer::new(
+        NonZero::new(1).unwrap(),
+        sample_rate,
+        samples,
+    ));
+    std::thread::sleep(duration);
     Ok(())
 }

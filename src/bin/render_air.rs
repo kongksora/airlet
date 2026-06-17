@@ -1,6 +1,11 @@
 use std::{fs, num::NonZero, path::PathBuf};
 
-use airlet::{Performance, normalize_peak, render_air_intro_a_dry};
+use airlet::{
+    engine::Engine,
+    normalize_peak,
+    performance::{ModelPreset, PerformancePlan},
+    songs,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -24,11 +29,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let sample_rate = NonZero::new(48_000).unwrap();
-    let mut samples = match model.as_str() {
-        "legacy" => Performance::air_intro_legacy().render(sample_rate, 0xA17E_7001),
-        "a-dry" => render_air_intro_a_dry(sample_rate),
+    let preset = match model.as_str() {
+        "legacy" => ModelPreset::Legacy,
+        "a-dry" => ModelPreset::ADry,
         _ => unreachable!(),
     };
+    let plan = PerformancePlan::new(songs::air::intro_composition())
+        .tempo(songs::air::intro_tempo())
+        .model(preset);
+    let mut samples = Engine::new(sample_rate).render(&plan);
     normalize_peak(&mut samples, 0.95);
 
     let spec = hound::WavSpec {

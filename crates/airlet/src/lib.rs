@@ -5,7 +5,9 @@ use std::{
 
 use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
+pub mod engine;
 pub mod model;
+pub mod performance;
 pub mod score;
 pub mod songs;
 
@@ -801,5 +803,33 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(first.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn engine_renders_timeline_models() {
+        use crate::{
+            engine::Engine,
+            performance::{ModelPreset, PerformancePlan},
+        };
+
+        let sample_rate = NonZero::new(8_000).unwrap();
+        let composition = songs::air::intro_composition();
+        let legacy = PerformancePlan::new(composition.clone())
+            .tempo(songs::air::intro_tempo())
+            .model(ModelPreset::Legacy);
+        let dry = PerformancePlan::new(composition)
+            .tempo(songs::air::intro_tempo())
+            .model(ModelPreset::ADry);
+        let engine = Engine::new(sample_rate);
+
+        let legacy_audio = engine.render(&legacy);
+        let dry_audio = engine.render(&dry);
+        let dry_audio_again = engine.render(&dry);
+
+        assert!(!legacy_audio.is_empty());
+        assert!(!dry_audio.is_empty());
+        assert_eq!(dry_audio, dry_audio_again);
+        assert!(legacy_audio.iter().all(|sample| sample.is_finite()));
+        assert!(dry_audio.iter().all(|sample| sample.is_finite()));
     }
 }
