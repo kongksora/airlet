@@ -20,7 +20,48 @@ impl MusicBoxModel {
                 noise_gain: 0.002,
             },
             tines: TineBankParams {
-                partials: Vec::new(),
+                partials: vec![
+                    PartialParams {
+                        frequency_ratio: 0.66438018,
+                        amplitude: 0.00601504,
+                        decay_scale: 1.0,
+                    },
+                    PartialParams {
+                        frequency_ratio: 1.0,
+                        amplitude: 1.0,
+                        decay_scale: 1.0,
+                    },
+                    PartialParams {
+                        frequency_ratio: 1.05251027,
+                        amplitude: 0.00321139,
+                        decay_scale: 1.0,
+                    },
+                    PartialParams {
+                        frequency_ratio: 1.68264716,
+                        amplitude: 0.00380713,
+                        decay_scale: 1.0,
+                    },
+                    PartialParams {
+                        frequency_ratio: 1.99771682,
+                        amplitude: 0.00427584,
+                        decay_scale: 1.0,
+                    },
+                    PartialParams {
+                        frequency_ratio: 2.24657311,
+                        amplitude: 0.00255180,
+                        decay_scale: 1.0,
+                    },
+                    PartialParams {
+                        frequency_ratio: 2.37671131,
+                        amplitude: 0.00409024,
+                        decay_scale: 1.0,
+                    },
+                    PartialParams {
+                        frequency_ratio: 9.68949859,
+                        amplitude: 0.01131735,
+                        decay_scale: 1.0,
+                    },
+                ],
                 base_decay_seconds: 0.25,
                 low_decay_boost: 0.1,
                 high_decay_power: 1.1,

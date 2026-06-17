@@ -8,6 +8,8 @@ use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 pub mod model;
 pub mod songs;
 
+use model::MusicBoxModel;
+
 // S(t) = amp * exp(-k*t) * sin(2πf*t + beta*exp(-gamma*t)*sin(2πm*t) + phi0)
 #[derive(Debug, Clone)]
 pub struct Single {
@@ -475,6 +477,188 @@ pub fn normalize_peak(samples: &mut [f32], peak: f32) {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ModalMode {
+    freq: f32,
+    amp: f32,
+    decay: f32,
+    phase: f32,
+}
+
+#[derive(Debug)]
+pub struct ModalTine {
+    modes: Vec<ModalMode>,
+    model: MusicBoxModel,
+    sample_rate: NonZero<u32>,
+    duration_samples: usize,
+    current_sample: usize,
+    click_phase: f32,
+    rng: StdRng,
+}
+
+impl ModalTine {
+    pub fn new_with_rng<R: Rng + ?Sized>(
+        freq: f32,
+        sample_rate: NonZero<u32>,
+        duration: Duration,
+        model: MusicBoxModel,
+        rng: &mut R,
+    ) -> Self {
+        let mut modes = Vec::with_capacity(model.tines.partials.len());
+
+        for (index, partial) in model.tines.partials.iter().enumerate() {
+            let detune = 2.0_f32.powf(normal01(rng) * model.tines.detune_cents / 1200.0);
+            let stretched = 1.0 + model.tines.stretch * index as f32 * index as f32;
+            let mode_freq = freq * partial.frequency_ratio * detune * stretched;
+            let freq_ratio = partial.frequency_ratio.max(0.1);
+            let high_decay_scale = freq_ratio.powf(model.tines.high_decay_power);
+            let low_decay = 1.0 + model.tines.low_decay_boost / freq_ratio.max(0.25);
+            let decay = model.tines.base_decay_seconds * low_decay / high_decay_scale.max(1e-6)
+                * partial.decay_scale;
+
+            modes.push(ModalMode {
+                freq: mode_freq,
+                amp: partial.amplitude.powf(model.tines.amplitude_power),
+                decay,
+                phase: rng.random::<f32>() * 2.0 * std::f32::consts::PI,
+            });
+        }
+
+        Self {
+            modes,
+            model,
+            sample_rate,
+            duration_samples: (sample_rate.get() as f64 * duration.as_secs_f64()) as usize,
+            current_sample: 0,
+            click_phase: rng.random::<f32>() * 2.0 * std::f32::consts::PI,
+            rng: StdRng::seed_from_u64(rng.random::<u64>()),
+        }
+    }
+}
+
+impl Iterator for ModalTine {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_sample >= self.duration_samples {
+            return None;
+        }
+
+        let sr = self.sample_rate.get() as f32;
+        let t = self.current_sample as f32 / sr;
+        let mut out = 0.0;
+
+        for mode in &self.modes {
+            let env = (-t / mode.decay.max(1e-6)).exp();
+            let phase = 2.0 * std::f32::consts::PI * mode.freq * t + mode.phase;
+            out += mode.amp * env * phase.sin();
+        }
+
+        if self.model.exciter.click_gain > 0.0 {
+            let anchor = self
+                .modes
+                .iter()
+                .max_by(|a, b| a.amp.total_cmp(&b.amp))
+                .map(|mode| mode.freq)
+                .unwrap_or(440.0);
+            let click_env = (-t / self.model.exciter.click_decay_seconds.max(1e-6)).exp();
+            let click_freq = (anchor * 7.0).min(sr * 0.45);
+            let click_tone = (2.0 * std::f32::consts::PI * click_freq * t + self.click_phase).sin();
+            let click_noise = normal01(&mut self.rng);
+            out +=
+                self.model.exciter.click_gain * click_env * (0.7 * click_tone + 0.3 * click_noise);
+        }
+
+        if self.model.exciter.noise_gain > 0.0 {
+            let noise_env = (-t / (self.model.tines.base_decay_seconds * 0.35).max(1e-6)).exp();
+            out += self.model.exciter.noise_gain * noise_env * normal01(&mut self.rng);
+        }
+
+        let attack = smoothstep((t / self.model.exciter.attack_seconds.max(1e-6)).min(1.0));
+        out *= attack;
+
+        let drive = self.model.tines.drive;
+        if drive > 0.0 {
+            out = (out * drive).tanh() / drive.tanh();
+        }
+
+        self.current_sample += 1;
+        Some(out * self.model.tines.output_gain)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelPlaybackConfig {
+    pub note_tail: Duration,
+    pub note_gain: f32,
+    pub final_tail: Duration,
+    pub model: MusicBoxModel,
+    pub seed: u64,
+}
+
+impl ModelPlaybackConfig {
+    pub fn air_dry() -> Self {
+        Self {
+            note_tail: Duration::from_millis(1200),
+            note_gain: 0.17,
+            final_tail: Duration::from_millis(800),
+            model: MusicBoxModel::modal_a_dry_probe(),
+            seed: 42,
+        }
+    }
+}
+
+pub fn render_events_with_model(
+    events: &[NoteEvent],
+    config: &ModelPlaybackConfig,
+    sample_rate: NonZero<u32>,
+) -> Vec<f32> {
+    let sample_rate_f64 = sample_rate.get() as f64;
+    let song_millis: u64 = events.iter().map(|event| event.millis).sum();
+    let total_duration = Duration::from_millis(song_millis) + config.note_tail + config.final_tail;
+    let total_samples = (total_duration.as_secs_f64() * sample_rate_f64).ceil() as usize;
+    let mut output = vec![0.0; total_samples];
+    let mut rng = StdRng::seed_from_u64(config.seed);
+    let mut cursor_samples = 0usize;
+
+    for event in events {
+        if !event.is_rest() {
+            let freq = midi_to_freq(event.midi_note);
+            let tine = ModalTine::new_with_rng(
+                freq,
+                sample_rate,
+                config.note_tail,
+                config.model.clone(),
+                &mut rng,
+            );
+
+            for (offset, sample) in tine.enumerate() {
+                if let Some(out) = output.get_mut(cursor_samples + offset) {
+                    *out += sample * config.note_gain;
+                }
+            }
+        }
+
+        cursor_samples += millis_to_samples(event.millis, sample_rate);
+    }
+
+    output
+}
+
+pub fn render_air_intro_a_dry(sample_rate: NonZero<u32>) -> Vec<f32> {
+    render_events_with_model(
+        &songs::air::intro().events,
+        &ModelPlaybackConfig::air_dry(),
+        sample_rate,
+    )
+}
+
+fn normal01<R: Rng + ?Sized>(rng: &mut R) -> f32 {
+    let u1 = rng.random::<f32>().clamp(f32::MIN_POSITIVE, 1.0);
+    let u2 = rng.random::<f32>();
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos()
+}
+
 fn millis_to_samples(millis: u64, sample_rate: NonZero<u32>) -> usize {
     ((millis as f64 / 1000.0) * sample_rate.get() as f64).round() as usize
 }
@@ -530,5 +714,22 @@ mod tests {
 
         assert!(!rendered.is_empty());
         assert!(rendered.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn model_a_dry_render_is_deterministic() {
+        let sample_rate = NonZero::new(8_000).unwrap();
+        let events = [NoteEvent::new(69, 50), NoteEvent::rest(50)];
+        let config = ModelPlaybackConfig {
+            note_tail: Duration::from_millis(100),
+            final_tail: Duration::from_millis(10),
+            ..ModelPlaybackConfig::air_dry()
+        };
+
+        let first = render_events_with_model(&events, &config, sample_rate);
+        let second = render_events_with_model(&events, &config, sample_rate);
+
+        assert_eq!(first, second);
+        assert!(first.iter().all(|sample| sample.is_finite()));
     }
 }
