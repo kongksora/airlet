@@ -1,0 +1,22 @@
+[project]
+name = "airlet-audio-lab"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "matplotlib>=3.10.0",
+    "numpy>=2.3.0",
+    "scipy>=1.16.0",
+    "soundfile>=0.13.0",
+]
+
+[project.scripts]
+airlet-analyze-reference = "airlet_audio_lab.analyze_reference:main"
+airlet-synth-probe = "airlet_audio_lab.synth_probe:main"
+
+[build-system]
+requires = ["setuptools>=80.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["airlet_audio_lab*"]

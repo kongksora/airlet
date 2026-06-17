@@ -1,1 +1,6 @@
 /target
+/references
+/py/.venv
+/py/out
+/py/*.egg-info
+/py/**/__pycache__
