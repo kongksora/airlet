@@ -14,7 +14,7 @@ Equivalent script entrypoints:
 
 ```bash
 uv run --project py airlet-analyze-reference
-uv run --project py airlet-render-air-probe py/out/analysis/Eb1/partials.csv
+uv run --project py airlet-render-air-probe py/out/analysis/A/partials.csv --preset a-dry
 uv run --project py airlet-synth-probe py/out/analysis/A/partials.csv
 ```
 
