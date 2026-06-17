@@ -1,26 +1,25 @@
 use crate::{
     NoteEvent, Pitch, Score,
-    score::{ComposedScore, Dur, ScoreBuilder},
+    score::{ComposedScore, Composition, Dur, ScoreBuilder, Tempo},
 };
 
 pub mod air {
     use super::*;
-
-    #[allow(dead_code)]
-    pub const WN: u64 = QN * 4;
-    #[allow(dead_code)]
-    pub const HN: u64 = QN * 2;
-    pub const QN: u64 = 500;
-    pub const EN: u64 = QN / 2;
-    pub const SN: u64 = QN / 4;
 
     pub fn intro() -> Score {
         Score::new("鳥の詩 intro", intro_melody())
     }
 
     pub fn intro_score() -> ComposedScore {
+        intro_composition().with_tempo(intro_tempo())
+    }
+
+    pub fn intro_tempo() -> Tempo {
+        Tempo::bpm(120.0)
+    }
+
+    pub fn intro_composition() -> Composition {
         ScoreBuilder::cypher("鳥の詩 intro", Pitch::D)
-            .tempo_quarter_millis(QN)
             .voice("melody", |v| {
                 // 第一小节
                 v.n(6, 0, Dur::QUARTER + Dur::EIGHTH)

@@ -91,8 +91,31 @@ impl Tempo {
         Self { quarter_millis }
     }
 
+    pub fn bpm(bpm: f64) -> Self {
+        assert!(bpm.is_finite() && bpm > 0.0, "bpm must be positive");
+        Self {
+            quarter_millis: (60_000.0 / bpm).round() as u64,
+        }
+    }
+
     pub fn ticks_to_millis(self, ticks: i64) -> u64 {
         ((ticks as i128 * self.quarter_millis as i128) / PPQ as i128) as u64
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Composition {
+    pub title: String,
+    pub voices: Vec<Voice>,
+}
+
+impl Composition {
+    pub fn with_tempo(self, tempo: Tempo) -> ComposedScore {
+        ComposedScore {
+            title: self.title,
+            tempo,
+            voices: self.voices,
+        }
     }
 }
 
@@ -226,7 +249,6 @@ pub enum EventKind {
 pub struct ScoreBuilder {
     title: String,
     notation: CypherNotation,
-    tempo: Tempo,
     voices: Vec<Voice>,
 }
 
@@ -235,14 +257,8 @@ impl ScoreBuilder {
         Self {
             title: title.into(),
             notation: CypherNotation::new(key),
-            tempo: Tempo::from_quarter_millis(500),
             voices: Vec::new(),
         }
-    }
-
-    pub fn tempo_quarter_millis(mut self, quarter_millis: u64) -> Self {
-        self.tempo = Tempo::from_quarter_millis(quarter_millis);
-        self
     }
 
     pub fn voice(mut self, name: impl Into<String>, build: impl FnOnce(&mut VoiceBuilder)) -> Self {
@@ -258,10 +274,9 @@ impl ScoreBuilder {
         self
     }
 
-    pub fn finish(self) -> ComposedScore {
-        ComposedScore {
+    pub fn finish(self) -> Composition {
+        Composition {
             title: self.title,
-            tempo: self.tempo,
             voices: self.voices,
         }
     }

@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn score_builder_expands_grace_notes_and_triplets() {
-        use crate::score::{Dur, EventKind, ScoreBuilder, g};
+        use crate::score::{Dur, EventKind, ScoreBuilder, Tempo, g};
 
         let music = CypherNotation::new(Pitch::D);
         let score = ScoreBuilder::cypher("test", Pitch::D)
@@ -713,7 +713,8 @@ mod tests {
                     t.n(1, 0).n(2, 0).n(3, 0);
                 });
             })
-            .finish();
+            .finish()
+            .with_tempo(Tempo::from_quarter_millis(500));
         let timeline = score.expand();
 
         assert_eq!(Dur::QUARTER.split_even(3), vec![Dur::from_ticks(320); 3]);
@@ -726,20 +727,17 @@ mod tests {
 
     #[test]
     fn duration_and_tempo_are_decoupled() {
-        use crate::score::{Dur, ScoreBuilder};
+        use crate::score::{Dur, ScoreBuilder, Tempo};
 
-        let slow = ScoreBuilder::cypher("slow", Pitch::D)
-            .tempo_quarter_millis(600)
+        let composition = ScoreBuilder::cypher("tempo-free", Pitch::D)
             .voice("melody", |v| {
                 v.n(1, 0, Dur::QUARTER);
             })
             .finish();
-        let fast = ScoreBuilder::cypher("fast", Pitch::D)
-            .tempo_quarter_millis(300)
-            .voice("melody", |v| {
-                v.n(1, 0, Dur::QUARTER);
-            })
-            .finish();
+        let slow = composition
+            .clone()
+            .with_tempo(Tempo::from_quarter_millis(600));
+        let fast = composition.with_tempo(Tempo::from_quarter_millis(300));
 
         assert_eq!(
             slow.expand().events[0].duration,
