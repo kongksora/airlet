@@ -865,6 +865,48 @@ mod tests {
     }
 
     #[test]
+    fn air_intro_timeline_onsets_are_stable() {
+        let timeline = songs::air::intro_score().expand();
+
+        assert_eq!(timeline.events.len(), 36);
+        assert_eq!(timeline.events[0].onset.0, 0);
+        assert_eq!(timeline.events[0].duration.ticks(), 1440);
+        assert_eq!(timeline.events[1].onset.0, 1440);
+        assert_eq!(timeline.events[4].onset.0, 2880);
+        assert_eq!(timeline.events[7].onset.0, 4560);
+        assert_eq!(timeline.events[8].onset.0, 7680);
+
+        let last = timeline.events.last().unwrap();
+        assert_eq!(last.onset.0, 29280);
+        assert_eq!(last.duration.ticks(), 480);
+    }
+
+    #[test]
+    fn engine_a_dry_golden_audio_stats() {
+        use crate::{
+            engine::Engine,
+            performance::{ModelPreset, PerformancePlan},
+        };
+
+        let sample_rate = NonZero::new(8_000).unwrap();
+        let plan = PerformancePlan::new(songs::air::intro_composition())
+            .tempo(songs::air::intro_tempo())
+            .model(ModelPreset::ADry);
+        let first = Engine::new(sample_rate).render(&plan);
+        let second = Engine::new(sample_rate).render(&plan);
+        let (peak, rms) = audio_peak_rms(&first);
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 140_000);
+        assert!(first.iter().all(|sample| sample.is_finite()));
+        assert!(
+            (0.005..0.5).contains(&peak),
+            "unexpected peak level: {peak}"
+        );
+        assert!((0.0001..0.08).contains(&rms), "unexpected rms level: {rms}");
+    }
+
+    #[test]
     fn mechanism_planner_exports_tooth_hints() {
         use crate::mechanism::MechanismPlanner;
 
@@ -905,5 +947,16 @@ mod tests {
             from_json.tines.partials.len()
         );
         assert_eq!(round_trip.body, from_json.body);
+    }
+
+    fn audio_peak_rms(samples: &[f32]) -> (f32, f32) {
+        let peak = samples
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0, f32::max);
+        let mean_square =
+            samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32;
+
+        (peak, mean_square.sqrt())
     }
 }

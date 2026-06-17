@@ -9,52 +9,51 @@ iterations do not erase backend/API goals.
 - `ComposedScore` is created by binding a `Composition` to a `Tempo`.
 - `Timeline` can expand absolute musical onsets and durations.
 - The current best sound-design target is the `a-dry` modal model, ported from
-  the Python probe into Rust.
-- The default app still plays the legacy realtime path.
+  the Python probe into Rust and stored as a bundled JSON preset.
+- The default app renders through `Engine` into a buffer, then plays that buffer
+  with `rodio`.
+
+## Roadmap Status
+
+- [x] Timeline-driven audio engine
+- [x] Unified engine API
+- [x] Performance and arrangement layer
+- [x] Score DSL expansion
+- [x] Mechanism hint export
+- [x] Preset serialization
+- [x] Golden checks
 
 ## Important Diagnosis: Direct Playback Timing
 
-The direct playback bin in `src/main.rs` currently runs:
+The direct playback bin in `src/main.rs` now runs:
 
 ```rust
-Performance::air_intro_legacy().play_realtime(sample_rate, &mut sink);
+let samples = Engine::new(sample_rate).render(&plan);
+stream_handle.mixer().add(SamplesBuffer::new(..., samples));
 ```
 
-That means direct playback is not using the current `a-dry` model yet.
+That means direct playback uses the same timeline-driven backend as the wav
+exporter. It no longer sleeps between individual notes, so the note onsets are
+scheduled by absolute sample offsets during rendering.
 
-It also does not use the new `Timeline`. It still consumes legacy
-`NoteEvent { midi_note, millis }` events and schedules notes by sleeping between
-events. This is enough for a demo, but it is not sample-accurate. Timing can feel
-loose because:
+Remaining timing caveat:
 
-- `std::thread::sleep` has scheduler jitter.
-- `rodio` mixer insertion happens in realtime, not at exact sample offsets.
-- old `NoteEvent.millis` represents "advance to next onset", not explicit
-  `onset + duration`.
-- the direct app uses the legacy sound model, while recent listening decisions
-  were made against exported `a-dry` wav files.
+- playback start still depends on `rodio` device scheduling, but once the buffer
+  starts, the internal musical timing is fixed in the rendered samples.
 
-So if the direct app feels rhythmically inaccurate, the likely cause is the old
-realtime scheduling path, not the score durations themselves. The score layer now
-has enough structure to support sample-accurate scheduling, but the audio engine
-has not been migrated to consume it.
-
-## Next Infrastructure
+## Completed Infrastructure
 
 ### 1. Timeline-Driven Audio Engine
 
-Make both `legacy` and `a-dry` consume `Timeline` instead of legacy
-`NoteEvent`.
-
-Target API:
+Both `legacy` and `a-dry` consume `Timeline` through `Engine`.
 
 ```rust
 let composition = songs::air::intro_composition();
 let performance = PerformancePlan::new(composition).tempo(songs::air::intro_tempo());
-let audio = Engine::new(ModelPreset::ADry).render(&performance);
+let audio = Engine::new(sample_rate).render(&performance);
 ```
 
-Required behavior:
+Implemented behavior:
 
 - use absolute `TimelineEvent.onset`;
 - schedule notes at sample offsets, not with sleeps;
@@ -63,19 +62,16 @@ Required behavior:
 
 ### 2. Unified Engine API
 
-Replace scattered render/play entry points with one backend surface:
+The app and wav exporter both use one backend surface:
 
 ```rust
-Engine::new(ModelPreset::Legacy).render(&performance)
-Engine::new(ModelPreset::ADry).render(&performance)
-Engine::new(ModelPreset::ADry).source(&performance)
+Engine::new(sample_rate).render(&performance)
+Engine::new(sample_rate).source(&performance)
 ```
-
-The app and wav exporter should both use this engine.
 
 ### 3. Performance and Arrangement Layer
 
-Add a layer between composition and engine:
+`PerformancePlan` sits between composition and engine:
 
 ```rust
 PerformancePlan {
@@ -87,14 +83,12 @@ PerformancePlan {
 }
 ```
 
-This layer decides how ornaments steal time, how velocities map to sound/model
-parameters, and how mechanical performance should quantize or humanize events.
+The policy fields are intentionally conservative placeholders; they give later
+ornament, velocity, quantization, and humanization work a stable place to land.
 
 ### 4. Score DSL Expansion
 
-Current DSL supports notes, rests, triplets, and `grace_before`.
-
-Next additions:
+The DSL now supports:
 
 - `Dur::pattern([1, 1, 2])`
 - tuplets over arbitrary total duration;
@@ -105,7 +99,7 @@ Next additions:
 
 ### 5. Mechanism Hint Export
 
-Add a planner that consumes `Timeline` and exports JSON:
+A planner consumes `Timeline` and exports JSON:
 
 ```rust
 ToothHint {
@@ -118,7 +112,7 @@ ToothHint {
 }
 ```
 
-Initial planner assumptions:
+Current planner assumptions:
 
 - pitch maps to comb/tine track and axial position;
 - onset maps to cylinder angle;
@@ -128,12 +122,13 @@ Initial planner assumptions:
 
 ### 6. Preset Serialization
 
-The current `a-dry` model is hardcoded in Rust and Python. Add TOML/RON/JSON
-model presets before doing many more sound iterations.
+The current `a-dry` model is stored at `crates/airlet/presets/a-dry.json`.
+`MusicBoxModel` can load from JSON and serialize back to JSON, while the
+hardcoded Rust constructor remains as a reference for now.
 
 ### 7. Golden Checks
 
-Avoid locking full wav contents, but add tests for:
+The test suite avoids locking full wav contents, but checks:
 
 - output duration;
 - no NaN/inf;
