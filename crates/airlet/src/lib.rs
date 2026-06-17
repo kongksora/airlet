@@ -6,6 +6,7 @@ use std::{
 use rand::{Rng, RngExt, SeedableRng, rngs::StdRng};
 
 pub mod engine;
+pub mod mechanism;
 pub mod model;
 pub mod performance;
 pub mod score;
@@ -861,5 +862,27 @@ mod tests {
         assert_eq!(dry_audio, dry_audio_again);
         assert!(legacy_audio.iter().all(|sample| sample.is_finite()));
         assert!(dry_audio.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn mechanism_planner_exports_tooth_hints() {
+        use crate::mechanism::MechanismPlanner;
+
+        let timeline = songs::air::intro_score().expand();
+        let hints = MechanismPlanner::default().plan(&timeline);
+        let playable = timeline
+            .events
+            .iter()
+            .filter(|event| event.midi_note > 0)
+            .count();
+
+        assert_eq!(hints.events.len(), playable);
+        assert!(hints.events.iter().all(|hint| hint.angle_rad.is_finite()));
+        assert!(
+            hints
+                .events
+                .iter()
+                .all(|hint| hint.axial_position.is_finite())
+        );
     }
 }
