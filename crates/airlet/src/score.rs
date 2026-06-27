@@ -1,4 +1,4 @@
-use crate::{CypherNotation, NoteEvent, Pitch};
+use crate::{CypherNotation, Pitch, compat::NoteEvent};
 
 pub const PPQ: i64 = 960;
 

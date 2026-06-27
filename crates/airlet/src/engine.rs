@@ -3,7 +3,10 @@ use std::{num::NonZero, time::Duration};
 use rand::{SeedableRng, rngs::StdRng};
 
 use crate::{
-    BoxTine, ModalTine, ModelPlaybackConfig, TineParams, midi_to_freq,
+    BoxTine, ModalTine, TineParams,
+    audio::RenderedAudio,
+    compat::ModelPlaybackConfig,
+    midi_to_freq,
     performance::{ModelPreset, PerformancePlan},
     score::{Timeline, TimelineEvent},
 };
@@ -27,7 +30,11 @@ impl Engine {
         self
     }
 
-    pub fn render(&self, plan: &PerformancePlan) -> Vec<f32> {
+    pub fn render(&self, plan: &PerformancePlan) -> RenderedAudio {
+        RenderedAudio::mono(self.sample_rate, self.render_samples(plan))
+    }
+
+    pub fn render_samples(&self, plan: &PerformancePlan) -> Vec<f32> {
         let score = plan.composed_score();
         let timeline = score.expand();
         match plan.model_preset {
@@ -43,7 +50,7 @@ impl Engine {
     }
 
     pub fn source(&self, plan: &PerformancePlan) -> std::vec::IntoIter<f32> {
-        self.render(plan).into_iter()
+        self.render_samples(plan).into_iter()
     }
 
     fn render_legacy_timeline(

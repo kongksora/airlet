@@ -1,5 +1,6 @@
 use crate::{
-    ModelPlaybackConfig, PlaybackConfig, TineParams,
+    TineParams,
+    compat::{ModelPlaybackConfig, PlaybackConfig},
     model::MusicBoxModel,
     score::{ComposedScore, Composition, Tempo},
 };

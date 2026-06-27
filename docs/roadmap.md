@@ -23,6 +23,100 @@ iterations do not erase backend/API goals.
 - [x] Preset serialization
 - [x] Golden checks
 
+## API Polish Roadmap
+
+This second pass turns the working backend into a cleaner crate surface for the
+future 3D app, CLI tools, Python-driven sound probes, and mechanical exporters.
+
+### Status
+
+- [x] Rendered audio product type
+- [x] Thin defaults layer
+- [x] Preset library API
+- [x] Legacy compatibility boundary
+- [x] App and exporter migration
+- [x] API-level tests
+
+### 1. Rendered Audio Product Type
+
+`Engine::render` should return a structured render product instead of a bare
+`Vec<f32>`:
+
+```rust
+RenderedAudio {
+    sample_rate,
+    channels,
+    samples,
+}
+```
+
+The type should own common metadata and utility methods:
+
+- `duration()`
+- `peak()`
+- `rms()`
+- `into_samples()`
+- `as_samples()`
+
+This keeps playback, wav export, tests, and future UI code from each
+recomputing duration and levels differently.
+
+### 2. Thin Defaults Layer
+
+The binary app should be a thin starter. Defaults should move into the crate:
+
+```rust
+defaults::air_intro_plan()
+defaults::air_intro_audio(sample_rate)
+```
+
+The default plan is currently:
+
+- `songs::air::intro_composition()`
+- `songs::air::intro_tempo()`
+- `ModelPreset::ADry`
+
+### 3. Preset Library API
+
+Bundled and filesystem presets should be accessed through explicit preset APIs:
+
+```rust
+PresetLibrary::bundled().load_model(ModelPreset::ADry)
+PresetLibrary::load_model_from_path(path)
+```
+
+The bundled `a-dry` JSON remains the canonical current sound target. This gives
+sound-design iteration a stable place to load edited preset files without
+touching the synthesis code.
+
+### 4. Legacy Compatibility Boundary
+
+Old `NoteEvent`/`Score`/`Performance`/`render_events` paths should not remain
+mixed into the main API surface without context. Keep them available for now,
+but move them behind a clearly named `compat` module and re-export only what the
+existing tests and demos still need.
+
+The long-term direction is:
+
+- composition goes through `score`;
+- playback/rendering goes through `performance` + `engine`;
+- old millisecond event streams are compatibility glue only.
+
+### 5. App and Exporter Migration
+
+`src/main.rs`, `render_air`, and tests should consume `RenderedAudio` and the
+defaults/preset APIs where appropriate. The app should still play the current
+default `a-dry` sound immediately after startup.
+
+### 6. API-Level Tests
+
+Add tests that lock the API contracts, not raw wav contents:
+
+- `RenderedAudio` duration/level helpers;
+- default plan renders with the current model;
+- bundled preset library loads `a-dry`;
+- legacy compatibility functions remain deterministic while they exist.
+
 ## Important Diagnosis: Direct Playback Timing
 
 The direct playback bin in `src/main.rs` now runs:

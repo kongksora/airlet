@@ -1,5 +1,6 @@
 use crate::{
-    NoteEvent, Pitch, Score,
+    Pitch,
+    compat::{NoteEvent, Score},
     score::{ComposedScore, Composition, Dur, ScoreBuilder, Tempo},
 };
 
