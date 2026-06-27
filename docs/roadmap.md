@@ -1,7 +1,8 @@
-# Airlet Backend Roadmap
+# Airlet Roadmap
 
 This document keeps the next infrastructure steps explicit so sound-design
-iterations do not erase backend/API goals.
+iterations do not erase backend/API goals or the final 3D performance-app
+direction.
 
 ## Current Baseline
 
@@ -10,8 +11,58 @@ iterations do not erase backend/API goals.
 - `Timeline` can expand absolute musical onsets and durations.
 - The current best sound-design target is the `a-dry` modal model, ported from
   the Python probe into Rust and stored as a bundled JSON preset.
-- The default app renders through `Engine` into a buffer, then plays that buffer
-  with `rodio`.
+- The top-level app is now the 3D Bevy music-box performance app shell.
+
+## 3D Exhibit Demo Roadmap
+
+Airlet's final top-level executable is the 3D music-box performance app. Extra
+operational capabilities should be exposed as crate APIs rather than new binary
+entry points. The top-level `src/main.rs` is therefore the Bevy app surface; the
+core crate remains responsible for score, audio, presets, and mechanism data.
+
+### Entry Policy
+
+- `src/main.rs` is the only top-level app entry for the product.
+- Do not add separate `play_*`, `render_*`, or `export_*` bins for normal
+  workflows.
+- Existing helper bins should be removed or converted into crate functions when
+  this app shell lands.
+- `crates/airlet` must stay Bevy-free and remain a lightweight backend crate.
+- Bevy, egui, camera control, model loading, and presentation state belong to
+  the top-level app crate.
+
+### Demo Acceptance Criteria
+
+- [x] Top-level app uses Bevy `0.19`.
+- [x] `bevy-egui` is enabled and visible as a control panel.
+- [x] The downloaded music-box model is loaded from
+  `assets/models/converted/music_box.glb`.
+- [x] The music box is statically placed on a platform.
+- [x] A spotlight illuminates the music box and points at the exhibit target.
+- [x] The camera always looks at the music box.
+- [x] Mouse orbit rotates around the target.
+- [x] Mouse or UI controls adjust pitch/elevation within sensible limits.
+- [x] The egui panel controls spotlight angle.
+- [x] The egui panel controls performance volume.
+- [x] The egui panel has start/stop performance controls.
+- [x] Audio playback uses the existing `airlet` rendered default sound.
+- [x] The app builds without adding additional binary entry points.
+
+### Initial Implementation Shape
+
+- Top-level `Cargo.toml` depends on:
+  - `bevy = "0.19.0"`
+  - `bevy_egui`
+  - `airlet`
+  - `rodio` for generated-buffer playback until Bevy-native generated audio is
+    introduced.
+- Top-level app modules may be organized under `src/` as normal Rust modules
+  rather than separate bins.
+- The first demo can display both imported open/closed model states if the GLB
+  contains both; separation into named product states can happen after asset
+  inspection.
+- Later animation work should consume `airlet::mechanism` hints instead of
+  hardcoding tooth/cylinder timing in Bevy.
 
 ## Roadmap Status
 
