@@ -124,6 +124,10 @@ pub struct RotatingPartSpec {
     pub pivot: [f32; 3],
     pub axis: [f32; 3],
     #[serde(default)]
+    pub radius: f32,
+    #[serde(default)]
+    pub length: f32,
+    #[serde(default)]
     pub closed_degrees: f32,
     #[serde(default)]
     pub open_degrees: f32,
@@ -390,6 +394,8 @@ mechanism_meshes = [2]
 meshes = [0]
 pivot = [0.0, 0.0, -1.0]
 axis = [1.0, 0.0, 0.0]
+radius = 0.0
+length = 0.0
 closed_degrees = 0.0
 open_degrees = 80.0
 
@@ -397,6 +403,8 @@ open_degrees = 80.0
 meshes = [2]
 pivot = [0.0, -0.5, 0.0]
 axis = [0.0, 0.0, 2.0]
+radius = 0.25
+length = 1.5
 degrees_per_second = 120.0
 "#;
 

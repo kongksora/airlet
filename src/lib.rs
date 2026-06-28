@@ -21,14 +21,12 @@ const DEFAULT_MODEL_SPEC: &str = "assets/models/converted/spec.toml";
 const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.60, 0.0);
 const PLATFORM_TOP_Y: f32 = 0.0;
 const MODEL_SCALE: f32 = 1.8;
-const PROCEDURAL_CYLINDER_RADIUS: f32 = 0.074;
-const PROCEDURAL_CYLINDER_LENGTH: f32 = 0.40;
-const TOOTH_RADIAL_PROTRUSION: f32 = 0.018;
-const TOOTH_WIDTH: f32 = 0.010;
-const TOOTH_HEIGHT: f32 = 0.028;
-const COMB_TINE_LENGTH: f32 = 0.18;
-const COMB_TINE_WIDTH: f32 = 0.006;
-const COMB_TINE_THICKNESS: f32 = 0.004;
+const TOOTH_RADIAL_PROTRUSION_RATIO: f32 = 0.22;
+const TOOTH_WIDTH_RATIO: f32 = 0.055;
+const TOOTH_HEIGHT_RATIO: f32 = 0.26;
+const COMB_TINE_LENGTH_RATIO: f32 = 1.35;
+const COMB_TINE_WIDTH_RATIO: f32 = 0.035;
+const COMB_TINE_THICKNESS_RATIO: f32 = 0.025;
 
 pub fn run() {
     App::new()
@@ -552,6 +550,7 @@ fn spawn_spec_model(
         root,
         cylinder_pivot,
         cylinder_pose,
+        &model.model,
         &mechanism.hint,
     );
 
@@ -618,10 +617,19 @@ fn spawn_hint_mechanism(
     root: Entity,
     cylinder_pivot: Entity,
     cylinder_pose: PivotPose,
+    model: &MovableMusicBoxModel,
     hint: &MechanismLayoutHint,
 ) {
     let axis = vec3(cylinder_pose.axis).normalize_or_zero();
     let (radial_zero, tangent_zero) = cylinder_radial_frame(axis);
+    let cylinder_radius = model.spec().cylinder.radius.max(0.01);
+    let cylinder_length = model.spec().cylinder.length.max(0.01);
+    let tooth_protrusion = cylinder_radius * TOOTH_RADIAL_PROTRUSION_RATIO;
+    let tooth_width = cylinder_length * TOOTH_WIDTH_RATIO;
+    let tooth_height = cylinder_radius * TOOTH_HEIGHT_RATIO;
+    let comb_tine_length = cylinder_radius * COMB_TINE_LENGTH_RATIO;
+    let comb_tine_width = cylinder_length * COMB_TINE_WIDTH_RATIO;
+    let comb_tine_thickness = cylinder_radius * COMB_TINE_THICKNESS_RATIO;
     let cylinder_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.96, 0.73, 0.24),
         metallic: 0.15,
@@ -647,7 +655,7 @@ fn spawn_hint_mechanism(
             ProceduralMechanism,
             Mesh3d(
                 meshes.add(
-                    Cylinder::new(PROCEDURAL_CYLINDER_RADIUS, PROCEDURAL_CYLINDER_LENGTH)
+                    Cylinder::new(cylinder_radius, cylinder_length)
                         .mesh()
                         .resolution(48),
                 ),
@@ -660,7 +668,16 @@ fn spawn_hint_mechanism(
     commands.entity(cylinder_pivot).add_child(cylinder);
 
     for tooth in &hint.events {
-        let transform = tooth_transform(tooth, hint, axis, radial_zero, tangent_zero);
+        let transform = tooth_transform(
+            tooth,
+            hint,
+            axis,
+            radial_zero,
+            tangent_zero,
+            cylinder_radius,
+            cylinder_length,
+            tooth_height,
+        );
         let entity = commands
             .spawn((
                 Name::new(format!(
@@ -668,11 +685,7 @@ fn spawn_hint_mechanism(
                     tooth.midi_note, tooth.onset_tick
                 )),
                 ProceduralMechanism,
-                Mesh3d(meshes.add(Cuboid::new(
-                    TOOTH_WIDTH,
-                    TOOTH_HEIGHT,
-                    TOOTH_RADIAL_PROTRUSION,
-                ))),
+                Mesh3d(meshes.add(Cuboid::new(tooth_width, tooth_height, tooth_protrusion))),
                 MeshMaterial3d(tooth_material.clone()),
                 transform,
                 Visibility::Visible,
@@ -689,9 +702,8 @@ fn spawn_hint_mechanism(
     notes.sort_unstable();
     notes.dedup();
     for midi_note in notes {
-        let axial = note_axial_position(midi_note, hint);
-        let position = axis * axial
-            + radial_zero * (PROCEDURAL_CYLINDER_RADIUS + COMB_TINE_LENGTH * 0.55)
+        let axial = note_axial_position(midi_note, hint, cylinder_length);
+        let position = axis * axial + radial_zero * (cylinder_radius + comb_tine_length * 0.55)
             - tangent_zero * 0.018;
         let rotation = basis_rotation(axis, -radial_zero, tangent_zero);
         let entity = commands
@@ -699,9 +711,9 @@ fn spawn_hint_mechanism(
                 Name::new(format!("Comb Tine midi {midi_note}")),
                 ProceduralMechanism,
                 Mesh3d(meshes.add(Cuboid::new(
-                    COMB_TINE_WIDTH,
-                    COMB_TINE_LENGTH,
-                    COMB_TINE_THICKNESS,
+                    comb_tine_width,
+                    comb_tine_length,
+                    comb_tine_thickness,
                 ))),
                 MeshMaterial3d(comb_material.clone()),
                 Transform::from_translation(vec3(cylinder_pose.pivot) + position)
@@ -845,30 +857,37 @@ fn tooth_transform(
     axis: Vec3,
     radial_zero: Vec3,
     tangent_zero: Vec3,
+    cylinder_radius: f32,
+    cylinder_length: f32,
+    tooth_height: f32,
 ) -> Transform {
     let angle = tooth.angle_rad;
     let radial = radial_zero * angle.cos() + tangent_zero * angle.sin();
     let tangent = (-radial_zero * angle.sin() + tangent_zero * angle.cos()).normalize_or_zero();
-    let axial = hint_axial_position(tooth.axial_position, hint);
-    let position = axis * axial + radial * (PROCEDURAL_CYLINDER_RADIUS + TOOTH_HEIGHT * 0.48);
+    let axial = hint_axial_position(tooth.axial_position, hint, cylinder_length);
+    let position = axis * axial + radial * (cylinder_radius + tooth_height * 0.48);
     Transform::from_translation(position).with_rotation(basis_rotation(axis, radial, tangent))
 }
 
-fn note_axial_position(midi_note: i32, hint: &MechanismLayoutHint) -> f32 {
+fn note_axial_position(midi_note: i32, hint: &MechanismLayoutHint, cylinder_length: f32) -> f32 {
     hint.events
         .iter()
         .find(|event| event.midi_note == midi_note)
-        .map(|event| hint_axial_position(event.axial_position, hint))
+        .map(|event| hint_axial_position(event.axial_position, hint, cylinder_length))
         .unwrap_or(0.0)
 }
 
-fn hint_axial_position(axial_position: f32, hint: &MechanismLayoutHint) -> f32 {
+fn hint_axial_position(
+    axial_position: f32,
+    hint: &MechanismLayoutHint,
+    cylinder_length: f32,
+) -> f32 {
     let normalized = if hint.cylinder_length.abs() <= f32::EPSILON {
         0.0
     } else {
         axial_position / hint.cylinder_length - 0.5
     };
-    normalized * PROCEDURAL_CYLINDER_LENGTH
+    normalized * cylinder_length
 }
 
 fn cylinder_radial_frame(axis: Vec3) -> (Vec3, Vec3) {

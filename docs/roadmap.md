@@ -312,6 +312,29 @@ Implementation checklist:
   and sound onset are aligned by construction.
 - [x] Screenshot-validate the updated stage and mechanism model.
 
+### Geometry-Sized Procedural Mechanism
+
+The first hint-driven demo used temporary app constants for procedural cylinder
+length and radius. That breaks visual scale and tooth axial distribution. The
+procedural mechanism must inherit dimensions from the fitted model geometry and
+keep app code out of model-specific sizing.
+
+Implementation checklist:
+
+- [x] Measure cylinder radius and length from the model geometry probe.
+- [x] Store fitted cylinder dimensions in `assets/models/converted/spec.toml`.
+- [x] Expose cylinder radius/length through `airlet-model`.
+- [x] Render the procedural cylinder, teeth, and comb using spec dimensions
+  instead of app constants.
+- [x] Screenshot-validate the corrected cylinder scale and axial distribution.
+- [x] Decide whether a lightweight debug action surface is enough, or whether
+  Airlet should grow a dedicated MCP server for live inspection/control.
+
+Decision: build a lightweight app/debug action surface first, then wrap it with
+MCP only after the state and action vocabulary is stable. The immediate useful
+actions are screenshot capture, camera/light controls, lid/cylinder controls,
+playback start/stop, and structured mechanism-state dumps.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the

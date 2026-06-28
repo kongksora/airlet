@@ -27,4 +27,6 @@ open_degrees = -56.657
 meshes = [26, 27, 29, 36]
 pivot = [-0.823696, -1.004789, -1.118376]
 axis = [0.499999, 0.0, 0.866026]
+radius = 0.06074
+length = 0.163612
 degrees_per_second = 120.0

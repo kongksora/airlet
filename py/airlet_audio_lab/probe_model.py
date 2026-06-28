@@ -660,7 +660,7 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
         - set(lid_meshes)
     )
     closed_cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
-    cylinder_center, cylinder_axis = _cylinder_pose(
+    cylinder_geometry = _cylinder_geometry(
         raw_meshes,
         [int(_mesh_index(mesh["geometry"])) for mesh in closed],
         cylinder_meshes,
@@ -695,8 +695,10 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
             "",
             "[cylinder]",
             f"meshes = {_toml_list(cylinder_meshes)}",
-            f"pivot = {_toml_list(cylinder_center)}",
-            f"axis = {_toml_list(cylinder_axis)}",
+            f"pivot = {_toml_list(cylinder_geometry['pivot'])}",
+            f"axis = {_toml_list(cylinder_geometry['axis'])}",
+            f"radius = {cylinder_geometry['radius']}",
+            f"length = {cylinder_geometry['length']}",
             "degrees_per_second = 120.0",
             "",
         ]
@@ -724,15 +726,24 @@ def _horizontal_axis_from_pca(pca_axes: list[list[float]]) -> np.ndarray:
     return axis / np.linalg.norm(axis)
 
 
-def _cylinder_pose(
+def _cylinder_geometry(
     meshes: list[dict[str, Any]], closed_indices: list[int], cylinder_indices: list[int]
-) -> tuple[list[float], list[float]]:
+) -> dict[str, Any]:
     cylinder = _dominant_cylinder_mesh(meshes, cylinder_indices)
     if cylinder is None:
-        return [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]
+        return {
+            "pivot": [0.0, 0.0, 0.0],
+            "axis": [1.0, 0.0, 0.0],
+            "radius": 0.0,
+            "length": 0.0,
+        }
     cylinder_center, cylinder_axes = _pca_frame(cylinder["points"])
+    cylinder_projection = (cylinder["points"] - cylinder_center) @ cylinder_axes.T
+    cylinder_extent = np.ptp(cylinder_projection, axis=0)
     cylinder_axis = _horizontal_axis_from_pca([_round_vec(axis) for axis in cylinder_axes])
     cylinder_axis = _orient_axis(cylinder_axis, np.array([1.0, 0.0, 0.0]))
+    radius = float((cylinder_extent[1] + cylinder_extent[2]) * 0.25)
+    length = float(cylinder_extent[0])
 
     axle_meshes = _coaxial_axle_meshes(meshes, closed_indices, cylinder, cylinder_axis)
     if len(axle_meshes) >= 2:
@@ -745,9 +756,19 @@ def _cylinder_pose(
         if np.linalg.norm(axle_axis) > 1e-6:
             axle_axis = _orient_axis(axle_axis, cylinder_axis)
             pivot = start + axle_axis * np.dot(cylinder_center - start, axle_axis)
-            return _round_vec(pivot), _round_vec(axle_axis)
+            return {
+                "pivot": _round_vec(pivot),
+                "axis": _round_vec(axle_axis),
+                "radius": round(radius, 6),
+                "length": round(length, 6),
+            }
 
-    return _round_vec(cylinder_center), _round_vec(cylinder_axis)
+    return {
+        "pivot": _round_vec(cylinder_center),
+        "axis": _round_vec(cylinder_axis),
+        "radius": round(radius, 6),
+        "length": round(length, 6),
+    }
 
 
 def _coaxial_axle_meshes(
