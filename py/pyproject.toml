@@ -5,12 +5,15 @@ requires-python = ">=3.14"
 dependencies = [
     "matplotlib>=3.10.0",
     "numpy>=2.3.0",
+    "pygltflib>=1.16.0",
     "scipy>=1.16.0",
     "soundfile>=0.13.0",
+    "trimesh>=4.8.0",
 ]
 
 [project.scripts]
 airlet-analyze-reference = "airlet_audio_lab.analyze_reference:main"
+airlet-probe-model = "airlet_audio_lab.probe_model:main"
 airlet-render-air-probe = "airlet_audio_lab.render_air_probe:main"
 airlet-synth-probe = "airlet_audio_lab.synth_probe:main"
 

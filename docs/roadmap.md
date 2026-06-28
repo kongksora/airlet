@@ -97,6 +97,52 @@ Fix and validation checklist:
 - [x] Preset serialization
 - [x] Golden checks
 
+## Asset Segmentation Roadmap
+
+Large 3D/modeling tasks must start by recording a roadmap before implementation.
+The current goal is to turn the downloaded two-state music-box asset into a
+usable parametric exhibit model: choose the closed model, center it, identify
+the lid/hinge/body parts, and prepare for `t=0..1` lid animation.
+
+### Current Scope
+
+This first pass should not guess an animation rig in Rust before the asset has
+been measured. It should produce evidence:
+
+- [x] Probe the GLB with Python/uv and export per-node bounds, centers, sizes,
+  and cluster assignments.
+- [x] Decide which spatial cluster is the closed model and which is the open
+  reference model.
+- [x] Classify closed-model nodes into `body`, `lid`, `hinge`, `handle`,
+  `mechanism`, or `unknown` using geometry heuristics.
+- [x] Estimate a lid pivot axis and an open-angle target from the open-model
+  reference.
+- [x] Generate a human-readable classification report under `target/`.
+- [x] Generate a debug render or image that colors the classified groups so the
+  decision can be visually checked.
+
+Current probe result:
+
+- closed model: lower-height left spatial cluster, 37 meshes;
+- open reference model: higher right spatial cluster, 38 meshes;
+- closed lid: `Mesh`, already separate from the body mesh;
+- open reference lid: `Mesh.037`;
+- estimated lid pivot: `[-0.854749, -0.854495, -1.386203]`;
+- estimated lid axis: `[1.0, 0.0, 0.0]`;
+- generated files: `target/model-probe.json`, `target/model-probe.md`, and
+  `target/model-probe-debug.png`.
+
+### Follow-Up Scope
+
+After the classification is validated visually:
+
+- [ ] Move closed-model rendering to grouped Bevy entities.
+- [ ] Add `LidAnimation { t, pivot, axis, closed_angle, open_angle }`.
+- [ ] Add an egui `Lid t` slider and optional play/pause toggle.
+- [ ] Validate screenshots at `t=0`, `t=0.5`, and `t=1`.
+- [ ] If the lid/body mesh is fused, add an explicit preprocessing step instead
+  of pretending Bevy transforms can separate it cleanly.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the
