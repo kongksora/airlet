@@ -54,6 +54,7 @@ const COMB_MIN_PLUCK_TICKS: i64 = PPQ / 16;
 const COMB_MAX_PLUCK_TICKS: i64 = PPQ / 3;
 const COMB_MIN_VIBRATION_TICKS: i64 = PPQ / 2;
 const COMB_MAX_VIBRATION_TICKS: i64 = PPQ * 3;
+const COMB_LIFT_WINDOW_RATIO: f32 = 0.65;
 const COMB_DEFLECTION_SCALE: f32 = 0.65;
 const COMB_MIN_DEFLECTION_RAD: f32 = 0.035;
 const COMB_MAX_DEFLECTION_RAD: f32 = 0.18;
@@ -180,6 +181,8 @@ struct CombAnimationEvent {
     midi_note: i32,
     onset_tick: i64,
     pluck_start_tick: i64,
+    contact_start_tick: i64,
+    max_deflection_start_tick: i64,
     release_tick: i64,
     contact_supported: bool,
     contact_window_ticks: i64,
@@ -1512,11 +1515,14 @@ fn comb_tine_deflection_for_event(
 ) -> f32 {
     let release_tick = event.onset_tick;
     if current_tick < release_tick {
-        let pluck_start = event.pluck_start_tick;
-        if current_tick < pluck_start {
+        if current_tick < event.contact_start_tick {
             return 0.0;
         }
-        let progress = (current_tick - pluck_start) as f32 / (release_tick - pluck_start) as f32;
+        if current_tick >= event.max_deflection_start_tick {
+            return -event.max_deflection_rad;
+        }
+        let lift_ticks = (event.max_deflection_start_tick - event.contact_start_tick).max(1);
+        let progress = (current_tick - event.contact_start_tick) as f32 / lift_ticks as f32;
         let eased = progress.clamp(0.0, 1.0).powf(1.7);
         -event.max_deflection_rad * eased
     } else {
@@ -1559,8 +1565,12 @@ fn release_alignment_preview(mechanism: &MechanismResource) -> Vec<Value> {
             json!({
                 "midi_note": event.midi_note,
                 "onset_tick": event.onset_tick,
+                "contact_start_tick": event.contact_start_tick,
                 "pluck_start_tick": event.pluck_start_tick,
                 "pluck_window_ticks": event.release_tick - event.pluck_start_tick,
+                "lift_window_ticks": event.max_deflection_start_tick - event.contact_start_tick,
+                "max_deflection_start_tick": event.max_deflection_start_tick,
+                "max_deflection_hold_ticks": event.release_tick - event.max_deflection_start_tick,
                 "release_tick": event.release_tick,
                 "release_equals_audio_onset": true,
                 "contact_supported": event.contact_supported,
@@ -1598,11 +1608,19 @@ fn derive_comb_animation_event(tooth: &ToothHint, ticks_per_turn: i64) -> CombAn
     let contact_window_ticks = (footprint_turn_ratio * ticks_per_turn as f32 * 1.75).round() as i64;
     let required_pluck_ticks = COMB_MIN_PLUCK_TICKS;
     let contact_supported = contact_window_ticks >= required_pluck_ticks;
-    let pluck_ticks = if contact_supported {
-        contact_window_ticks.clamp(COMB_MIN_PLUCK_TICKS, COMB_MAX_PLUCK_TICKS)
+    let contact_start_tick = if contact_supported {
+        tooth.onset_tick - contact_window_ticks
+    } else {
+        tooth.onset_tick
+    };
+    let lift_ticks = if contact_supported {
+        ((contact_window_ticks as f32 * COMB_LIFT_WINDOW_RATIO).round() as i64)
+            .clamp(COMB_MIN_PLUCK_TICKS, COMB_MAX_PLUCK_TICKS)
+            .min(contact_window_ticks)
     } else {
         0
     };
+    let max_deflection_start_tick = contact_start_tick + lift_ticks;
     let velocity = tooth.velocity_hint.clamp(0.0, 1.0);
     let protrusion_ratio = (tooth.protrusion / tooth.radius.max(0.01)).clamp(0.0, 0.25);
     let raw_deflection = 0.055 + velocity * 0.14 + protrusion_ratio * 0.36;
@@ -1625,7 +1643,9 @@ fn derive_comb_animation_event(tooth: &ToothHint, ticks_per_turn: i64) -> CombAn
     CombAnimationEvent {
         midi_note: tooth.midi_note,
         onset_tick: tooth.onset_tick,
-        pluck_start_tick: tooth.onset_tick - pluck_ticks,
+        pluck_start_tick: contact_start_tick,
+        contact_start_tick,
+        max_deflection_start_tick,
         release_tick: tooth.onset_tick,
         contact_supported,
         contact_window_ticks,
@@ -2341,10 +2361,54 @@ mod tests {
         assert!(pre_release < 0.0);
         assert!(at_release < 0.0);
         assert!(ghost_at_release.visible);
+        assert_eq!(event.pluck_start_tick, event.contact_start_tick);
+        assert!(event.contact_start_tick < event.max_deflection_start_tick);
+        assert!(event.max_deflection_start_tick < event.release_tick);
 
         let preview = release_alignment_preview(&mechanism);
         assert_eq!(preview[0]["onset_tick"], preview[0]["release_tick"]);
         assert_eq!(preview[0]["release_equals_audio_onset"], true);
+    }
+
+    #[test]
+    fn comb_pluck_window_has_contact_lift_hold_and_release_phases() {
+        let mechanism = load_mechanism_layout();
+        let event = mechanism.comb_animation_events.first().unwrap();
+
+        let pre_contact = comb_tine_sample(
+            event.midi_note,
+            event.contact_start_tick - 1,
+            None,
+            &mechanism,
+        )
+        .map(|sample| sample.deflection_rad)
+        .unwrap_or(0.0);
+        let contact_start =
+            comb_tine_sample(event.midi_note, event.contact_start_tick, None, &mechanism)
+                .unwrap()
+                .deflection_rad;
+        let mid_lift_tick = (event.contact_start_tick + event.max_deflection_start_tick) / 2;
+        let mid_lift = comb_tine_sample(event.midi_note, mid_lift_tick, None, &mechanism)
+            .unwrap()
+            .deflection_rad;
+        let max_hold = comb_tine_sample(
+            event.midi_note,
+            event.max_deflection_start_tick,
+            None,
+            &mechanism,
+        )
+        .unwrap()
+        .deflection_rad;
+        let pre_release =
+            comb_tine_sample(event.midi_note, event.release_tick - 1, None, &mechanism)
+                .unwrap()
+                .deflection_rad;
+
+        assert_eq!(pre_contact, 0.0);
+        assert_eq!(contact_start, -0.0);
+        assert!(mid_lift < contact_start);
+        assert_eq!(max_hold, -event.max_deflection_rad);
+        assert_eq!(pre_release, -event.max_deflection_rad);
     }
 
     #[test]
@@ -2405,6 +2469,8 @@ mod tests {
 
         assert!(!event.contact_supported);
         assert!(event.contact_window_ticks < event.required_pluck_ticks);
+        assert_eq!(event.contact_start_tick, event.onset_tick);
+        assert_eq!(event.max_deflection_start_tick, event.onset_tick);
         assert_eq!(event.max_deflection_rad, 0.0);
         assert_eq!(event.vibration_ticks, 0);
         assert!(comb_tine_sample(event.midi_note, event.release_tick, None, &mechanism).is_none());

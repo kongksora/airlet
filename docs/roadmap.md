@@ -640,11 +640,15 @@ Implementation checklist:
   segment entities.
 - [x] Gate the visual pluck/vibration on tooth contact length so too-short
   teeth do not fake a pluck or auto-vibrate.
+- [x] Split the pre-release motion into contact, lift, max-deflection hold, and
+  release phases instead of a single ramp.
 
 Validation notes:
 
-- `uv run --project py airlet-comb-motion-sequence` captures a six-frame
-  close-up sequence plus `sequence.json` metadata and `contact_sheet.png`.
+- `uv run --project py airlet-comb-motion-sequence` captures a close-up
+  sequence plus `sequence.json` metadata and `contact_sheet.png`; the frame
+  plan now samples pre-contact, contact start, mid-lift, max deflection,
+  release, early vibration, and late decay.
 - MCP now supports screenshot-focused camera target overrides and hiding the
   egui panel via `set_ui`.
 - The side-view sequence at
@@ -657,9 +661,18 @@ Validation notes:
   `required_pluck_ticks = 60`.
 - `target/comb-motion-sequence-single-mesh/contact_sheet.png` validates the
   same close-up sequence against the single-mesh implementation.
+- `target/airlet-contact-phases-debug.json` validates that the default Air
+  events now have ordered `contact_start_tick <= max_deflection_start_tick <=
+  release_tick == onset_tick`; the first event uses contact start `11687`, max
+  deflection start `12007`, and release/onset `12240`.
+- `target/comb-motion-sequence-contact-phases/contact_sheet.png` validates the
+  updated seven-frame contact/lift/hold/release/vibration sequence.
 - `too_short_tooth_does_not_fake_pluck_or_vibration` verifies that insufficient
   tooth length yields `contact_supported = false`, zero deflection, zero
   vibration duration, and no comb animation sample.
+- `comb_pluck_window_has_contact_lift_hold_and_release_phases` verifies that
+  contact starts from zero deflection, lift ramps up, max deflection is held
+  until release, and release stays aligned to the audio onset.
 
 ## API Polish Roadmap
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -90,14 +91,16 @@ def main() -> None:
 
 
 def _frame_plan(event: dict[str, Any]) -> list[dict[str, Any]]:
-    pluck_start = int(event["pluck_start_tick"])
+    contact_start = int(event.get("contact_start_tick", event["pluck_start_tick"]))
+    max_deflection_start = int(event.get("max_deflection_start_tick", event["release_tick"]))
     release = int(event["release_tick"])
-    pluck_window = max(1, release - pluck_start)
+    lift_window = max(1, max_deflection_start - contact_start)
     vibration_ticks = max(1, int(event["vibration_ticks"]))
     return [
-        {"name": "pre_pluck", "tick": pluck_start - max(1, pluck_window // 8)},
-        {"name": "pluck_start", "tick": pluck_start},
-        {"name": "mid_pluck", "tick": pluck_start + pluck_window // 2},
+        {"name": "pre_contact", "tick": contact_start - max(1, lift_window // 8)},
+        {"name": "contact_start", "tick": contact_start},
+        {"name": "mid_lift", "tick": contact_start + lift_window // 2},
+        {"name": "max_deflection", "tick": max_deflection_start},
         {"name": "release", "tick": release},
         {"name": "early_vibration", "tick": release + vibration_ticks // 10},
         {"name": "late_decay", "tick": release + vibration_ticks // 2},
@@ -114,13 +117,18 @@ def _wait_for_file(path: Path) -> None:
 
 
 def _write_contact_sheet(frames: list[dict[str, Any]], path: Path, crop: list[int]) -> None:
-    fig, axes = plt.subplots(2, 3, figsize=(14, 7.5), dpi=140)
+    columns = 3
+    rows = math.ceil(len(frames) / columns)
+    fig, axes = plt.subplots(rows, columns, figsize=(14, 3.75 * rows), dpi=140)
     x0, y0, x1, y1 = crop
-    for ax, frame in zip(axes.flat, frames, strict=True):
+    flat_axes = list(axes.flat) if hasattr(axes, "flat") else [axes]
+    for ax, frame in zip(flat_axes, frames, strict=False):
         image = mpimg.imread(frame["path"])
         image = image[y0:y1, x0:x1]
         ax.imshow(image)
         ax.set_title(f"{frame['name']}\ntick {frame['tick']}", fontsize=8)
+        ax.axis("off")
+    for ax in flat_axes[len(frames) :]:
         ax.axis("off")
     fig.tight_layout(pad=0.8)
     fig.savefig(path)
