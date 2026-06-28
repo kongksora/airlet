@@ -576,6 +576,49 @@ Validation notes:
   and `target/airlet-comb-animation-open-shot.png` (open, 1280x800,
   mean 0.372433).
 
+### Adaptive Comb Tine Vibration Visuals
+
+The current release-aligned animation is mechanically correct at the event level
+but too literal for high-frequency vibration. A display running at normal frame
+rates cannot reproduce the physical oscillation cleanly, so the visual layer
+should use a common motion-smear approach: multiple faint tine instances at
+sampled vibration phases, while the primary tine follows the current deflection.
+
+The chain must stay adaptive:
+
+`melody -> timeline -> hint -> tooth geometry -> comb animation`
+
+Implementation checklist:
+
+- [x] Derive comb animation events from `ToothHint` instead of fixed visual
+  constants.
+- [x] Compute pre-release lift duration from each tooth's tangential footprint
+  and the planned cylinder turn duration.
+- [x] Compute maximum deflection from tooth protrusion and velocity hint.
+- [x] Compute vibration duration from velocity/protrusion so stronger teeth
+  linger longer.
+- [x] Animate the pluck as a slow raised ramp before release.
+- [x] Add semi-transparent ghost tine instances to approximate vibration smear.
+- [x] Expose derived animation parameters in `dump_mechanism`.
+- [x] Add tests for hint-driven animation adaptation and release alignment.
+- [x] Runtime-validate with MCP/debug dump and open-lid screenshot.
+
+Validation notes:
+
+- `target/airlet-adaptive-comb-animation-debug.json` reports 36 animation
+  events, 4 ghost samples per tine, and every preview row satisfies
+  `release_tick == onset_tick`.
+- Current bundled Air hint has uniform velocity/protrusion/tooth length, so the
+  default song currently produces equal deflection and duration values. The
+  synthetic test verifies that stronger/larger hint teeth produce longer pluck
+  windows, larger deflection, and longer vibration.
+- Runtime scene spawned with 212 mesh components, consistent with main comb
+  tines plus ghost instances.
+- Screenshots:
+  `target/airlet-adaptive-comb-animation-open-shot.png` (1280x800, mean
+  0.372422) and `target/airlet-adaptive-comb-animation-close-shot.png`
+  (1280x800, mean 0.408263).
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the

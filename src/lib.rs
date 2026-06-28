@@ -48,11 +48,11 @@ const COMB_FREE_LENGTH_RATIO: f32 = 0.72;
 const COMB_TINE_WIDTH_SPACING_RATIO: f32 = 0.82;
 const COMB_TRACK_USABLE_LENGTH_RATIO: f32 = 0.86;
 const DEFAULT_TOOTH_CLEARANCE_RATIO: f32 = 0.92;
-const COMB_PLUCK_WINDOW_TICKS: i64 = PPQ / 8;
-const COMB_VIBRATION_TICKS: i64 = PPQ * 2;
-const COMB_MAX_DEFLECTION_RAD: f32 = 0.16;
-const COMB_VIBRATION_HZ: f32 = 18.0;
-const COMB_VIBRATION_DAMPING: f32 = 9.5;
+const COMB_MIN_PLUCK_TICKS: i64 = PPQ / 16;
+const COMB_MAX_PLUCK_TICKS: i64 = PPQ / 3;
+const COMB_MIN_VIBRATION_TICKS: i64 = PPQ / 2;
+const COMB_MAX_VIBRATION_TICKS: i64 = PPQ * 3;
+const COMB_GHOST_SAMPLES: [f32; 4] = [-0.38, -0.18, 0.18, 0.38];
 const DEFAULT_DEBUG_BIND: &str = "127.0.0.1:4777";
 
 pub fn run() {
@@ -161,8 +161,25 @@ pub struct PlaybackState {
 #[derive(Resource)]
 struct MechanismResource {
     hint: MechanismLayoutHint,
+    comb_animation_events: Vec<CombAnimationEvent>,
     ticks_per_turn: i64,
     quarter_millis: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CombAnimationEvent {
+    midi_note: i32,
+    onset_tick: i64,
+    pluck_start_tick: i64,
+    release_tick: i64,
+    max_deflection_rad: f32,
+    vibration_ticks: i64,
+    vibration_hz: f32,
+    damping: f32,
+    smear_samples: usize,
+    source_protrusion: f32,
+    source_tooth_length: f32,
+    source_velocity: f32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -401,9 +418,10 @@ struct CylinderPivot;
 struct ProceduralMechanism;
 
 #[derive(Component)]
-struct CombTinePivot {
+struct CombTineVisual {
     midi_note: i32,
     rest_rotation: Quat,
+    smear_sample: Option<f32>,
 }
 
 #[derive(Resource)]
@@ -970,14 +988,22 @@ fn apply_rig_controls(
 fn animate_comb_tines(
     playback: Res<PlaybackState>,
     mechanism: Res<MechanismResource>,
-    mut query: Query<(&CombTinePivot, &mut Transform)>,
+    mut query: Query<(&CombTineVisual, &mut Transform, &mut Visibility)>,
 ) {
     let current_tick = (playback.is_playing || playback.elapsed_seconds > f32::EPSILON)
         .then(|| seconds_to_tick(playback.elapsed_seconds, &mechanism));
-    for (tine, mut transform) in &mut query {
-        let deflection = current_tick
-            .map(|tick| comb_tine_deflection(tine.midi_note, tick, &mechanism))
-            .unwrap_or(0.0);
+    for (tine, mut transform, mut visibility) in &mut query {
+        let sample = current_tick
+            .and_then(|tick| comb_tine_sample(tine.midi_note, tick, tine.smear_sample, &mechanism));
+        let deflection = sample.map(|sample| sample.deflection_rad).unwrap_or(0.0);
+        *visibility = if sample
+            .map(|sample| sample.visible || tine.smear_sample.is_none())
+            .unwrap_or(tine.smear_sample.is_none())
+        {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
         transform.rotation = tine.rest_rotation * Quat::from_rotation_x(deflection);
     }
 }
@@ -1058,6 +1084,14 @@ fn spawn_hint_mechanism(
         metallic: 0.94,
         perceptual_roughness: 0.18,
         reflectance: 0.88,
+        ..default()
+    });
+    let comb_ghost_material = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.82, 0.88, 0.88, 0.22),
+        metallic: 0.94,
+        perceptual_roughness: 0.12,
+        reflectance: 0.88,
+        alpha_mode: AlphaMode::Blend,
         ..default()
     });
 
@@ -1157,39 +1191,104 @@ fn spawn_hint_mechanism(
     commands.entity(root).add_child(fixed);
 
     for midi_note in calibration.lowest_midi..=calibration.highest_midi {
-        let axial = note_axial_position(midi_note, &calibration);
-        let pivot_position = axis * axial + radial_zero * (tip_radius + comb_free_length);
-        let rotation = basis_rotation(axis, radial_zero, tangent_zero);
-        let pivot = commands
-            .spawn((
-                Name::new(format!("Comb Tine Pivot midi {midi_note}")),
-                CombTinePivot {
-                    midi_note,
-                    rest_rotation: rotation,
-                },
-                ProceduralMechanism,
-                Transform::from_translation(vec3(cylinder_pose.pivot) + pivot_position)
-                    .with_rotation(rotation),
-                Visibility::Visible,
-            ))
-            .id();
-        let tine = commands
-            .spawn((
-                Name::new(format!("Comb Free Tine midi {midi_note}")),
-                ProceduralMechanism,
-                Mesh3d(meshes.add(Cuboid::new(
-                    comb_tine_width,
-                    comb_free_length,
-                    comb_tine_thickness,
-                ))),
-                MeshMaterial3d(comb_material.clone()),
-                Transform::from_xyz(0.0, -comb_free_length * 0.5, 0.0),
-                Visibility::Visible,
-            ))
-            .id();
-        commands.entity(pivot).add_child(tine);
-        commands.entity(root).add_child(pivot);
+        spawn_comb_tine_visual(
+            commands,
+            meshes,
+            root,
+            cylinder_pose.pivot,
+            midi_note,
+            None,
+            &comb_material,
+            axis,
+            radial_zero,
+            tangent_zero,
+            tip_radius,
+            comb_free_length,
+            comb_tine_width,
+            comb_tine_thickness,
+            &calibration,
+        );
+        for smear_sample in COMB_GHOST_SAMPLES {
+            spawn_comb_tine_visual(
+                commands,
+                meshes,
+                root,
+                cylinder_pose.pivot,
+                midi_note,
+                Some(smear_sample),
+                &comb_ghost_material,
+                axis,
+                radial_zero,
+                tangent_zero,
+                tip_radius,
+                comb_free_length,
+                comb_tine_width,
+                comb_tine_thickness,
+                &calibration,
+            );
+        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_comb_tine_visual(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    root: Entity,
+    cylinder_pivot: [f32; 3],
+    midi_note: i32,
+    smear_sample: Option<f32>,
+    material: &Handle<StandardMaterial>,
+    axis: Vec3,
+    radial_zero: Vec3,
+    tangent_zero: Vec3,
+    tip_radius: f32,
+    comb_free_length: f32,
+    comb_tine_width: f32,
+    comb_tine_thickness: f32,
+    calibration: &MechanismCalibration,
+) {
+    let axial = note_axial_position(midi_note, calibration);
+    let pivot_position = axis * axial + radial_zero * (tip_radius + comb_free_length);
+    let rotation = basis_rotation(axis, radial_zero, tangent_zero);
+    let suffix = smear_sample
+        .map(|sample| format!(" ghost {sample:.2}"))
+        .unwrap_or_default();
+    let visibility = if smear_sample.is_some() {
+        Visibility::Hidden
+    } else {
+        Visibility::Visible
+    };
+    let pivot = commands
+        .spawn((
+            Name::new(format!("Comb Tine Pivot midi {midi_note}{suffix}")),
+            CombTineVisual {
+                midi_note,
+                rest_rotation: rotation,
+                smear_sample,
+            },
+            ProceduralMechanism,
+            Transform::from_translation(vec3(cylinder_pivot) + pivot_position)
+                .with_rotation(rotation),
+            visibility,
+        ))
+        .id();
+    let tine = commands
+        .spawn((
+            Name::new(format!("Comb Free Tine midi {midi_note}{suffix}")),
+            ProceduralMechanism,
+            Mesh3d(meshes.add(Cuboid::new(
+                comb_tine_width,
+                comb_free_length,
+                comb_tine_thickness,
+            ))),
+            MeshMaterial3d(material.clone()),
+            Transform::from_xyz(0.0, -comb_free_length * 0.5, 0.0),
+            visibility,
+        ))
+        .id();
+    commands.entity(pivot).add_child(tine);
+    commands.entity(root).add_child(pivot);
 }
 
 fn auto_screenshot(
@@ -1309,27 +1408,54 @@ fn seconds_to_tick(seconds: f32, mechanism: &MechanismResource) -> i64 {
     (seconds.max(0.0) * 1000.0 * PPQ as f32 / mechanism.quarter_millis as f32).round() as i64
 }
 
-fn comb_tine_deflection(midi_note: i32, current_tick: i64, mechanism: &MechanismResource) -> f32 {
-    let Some(event) = nearest_comb_animation_event(midi_note, current_tick, mechanism) else {
-        return 0.0;
-    };
+#[derive(Debug, Clone, Copy)]
+struct CombTineSample {
+    deflection_rad: f32,
+    visible: bool,
+}
+
+fn comb_tine_sample(
+    midi_note: i32,
+    current_tick: i64,
+    smear_sample: Option<f32>,
+    mechanism: &MechanismResource,
+) -> Option<CombTineSample> {
+    let event = nearest_comb_animation_event(midi_note, current_tick, mechanism)?;
+    let deflection_rad = comb_tine_deflection_for_event(event, current_tick, smear_sample);
+    let visible = smear_sample.is_none()
+        || (current_tick >= event.release_tick
+            && current_tick <= event.release_tick + event.vibration_ticks);
+    Some(CombTineSample {
+        deflection_rad,
+        visible,
+    })
+}
+
+fn comb_tine_deflection_for_event(
+    event: &CombAnimationEvent,
+    current_tick: i64,
+    smear_sample: Option<f32>,
+) -> f32 {
     let release_tick = event.onset_tick;
     if current_tick < release_tick {
-        let pluck_start = release_tick - COMB_PLUCK_WINDOW_TICKS;
+        let pluck_start = event.pluck_start_tick;
         if current_tick < pluck_start {
             return 0.0;
         }
-        let progress = (current_tick - pluck_start) as f32 / COMB_PLUCK_WINDOW_TICKS as f32;
-        -COMB_MAX_DEFLECTION_RAD * progress.clamp(0.0, 1.0)
+        let progress = (current_tick - pluck_start) as f32 / (release_tick - pluck_start) as f32;
+        let eased = progress.clamp(0.0, 1.0).powf(1.7);
+        -event.max_deflection_rad * eased
     } else {
-        let elapsed_ticks = current_tick - release_tick;
-        if elapsed_ticks > COMB_VIBRATION_TICKS {
+        let sample_ticks = smear_sample
+            .map(|sample| (sample * visual_vibration_period_ticks(event)).round() as i64)
+            .unwrap_or(0);
+        let elapsed_ticks = current_tick + sample_ticks - release_tick;
+        if elapsed_ticks < 0 || elapsed_ticks > event.vibration_ticks {
             return 0.0;
         }
-        let elapsed_seconds =
-            elapsed_ticks as f32 * mechanism.quarter_millis as f32 / PPQ as f32 / 1000.0;
-        let envelope = (-COMB_VIBRATION_DAMPING * elapsed_seconds).exp();
-        -COMB_MAX_DEFLECTION_RAD * envelope * (2.0 * PI * COMB_VIBRATION_HZ * elapsed_seconds).cos()
+        let progress = elapsed_ticks as f32 / event.vibration_ticks.max(1) as f32;
+        let envelope = (-event.damping * progress).exp();
+        -event.max_deflection_rad * envelope * (2.0 * PI * event.vibration_hz * progress).cos()
     }
 }
 
@@ -1337,35 +1463,85 @@ fn nearest_comb_animation_event<'a>(
     midi_note: i32,
     current_tick: i64,
     mechanism: &'a MechanismResource,
-) -> Option<&'a ToothHint> {
+) -> Option<&'a CombAnimationEvent> {
     mechanism
-        .hint
-        .events
+        .comb_animation_events
         .iter()
         .filter(|event| event.midi_note == midi_note)
         .filter(|event| {
-            current_tick >= event.onset_tick - COMB_PLUCK_WINDOW_TICKS
-                && current_tick <= event.onset_tick + COMB_VIBRATION_TICKS
+            current_tick >= event.pluck_start_tick
+                && current_tick <= event.release_tick + event.vibration_ticks
         })
-        .min_by_key(|event| (current_tick - event.onset_tick).abs())
+        .min_by_key(|event| (current_tick - event.release_tick).abs())
 }
 
 fn release_alignment_preview(mechanism: &MechanismResource) -> Vec<Value> {
     mechanism
-        .hint
-        .events
+        .comb_animation_events
         .iter()
         .take(64)
         .map(|event| {
             json!({
                 "midi_note": event.midi_note,
                 "onset_tick": event.onset_tick,
-                "pluck_start_tick": event.onset_tick - COMB_PLUCK_WINDOW_TICKS,
-                "release_tick": event.onset_tick,
+                "pluck_start_tick": event.pluck_start_tick,
+                "pluck_window_ticks": event.release_tick - event.pluck_start_tick,
+                "release_tick": event.release_tick,
                 "release_equals_audio_onset": true,
+                "max_deflection_rad": event.max_deflection_rad,
+                "vibration_ticks": event.vibration_ticks,
+                "vibration_hz": event.vibration_hz,
+                "smear_samples": event.smear_samples,
+                "source_protrusion": event.source_protrusion,
+                "source_tooth_length": event.source_tooth_length,
+                "source_velocity": event.source_velocity,
             })
         })
         .collect()
+}
+
+fn visual_vibration_period_ticks(event: &CombAnimationEvent) -> f32 {
+    event.vibration_ticks.max(1) as f32 / event.vibration_hz.max(1.0)
+}
+
+fn derive_comb_animation_events(
+    hint: &MechanismLayoutHint,
+    ticks_per_turn: i64,
+) -> Vec<CombAnimationEvent> {
+    hint.events
+        .iter()
+        .map(|tooth| derive_comb_animation_event(tooth, ticks_per_turn))
+        .collect()
+}
+
+fn derive_comb_animation_event(tooth: &ToothHint, ticks_per_turn: i64) -> CombAnimationEvent {
+    let circumference = (2.0 * PI * tooth.radius.max(0.01)).max(0.01);
+    let footprint_turn_ratio = (tooth.length_along_rotation.max(0.01) / circumference).max(0.0);
+    let pluck_ticks = (footprint_turn_ratio * ticks_per_turn as f32 * 1.75).round() as i64;
+    let pluck_ticks = pluck_ticks.clamp(COMB_MIN_PLUCK_TICKS, COMB_MAX_PLUCK_TICKS);
+    let velocity = tooth.velocity_hint.clamp(0.0, 1.0);
+    let protrusion_ratio = (tooth.protrusion / tooth.radius.max(0.01)).clamp(0.0, 0.25);
+    let max_deflection_rad = (0.055 + velocity * 0.14 + protrusion_ratio * 0.36).clamp(0.055, 0.26);
+    let vibration_ticks =
+        ((0.55 + velocity * 1.35 + protrusion_ratio * 2.0) * PPQ as f32).round() as i64;
+    let vibration_ticks = vibration_ticks.clamp(COMB_MIN_VIBRATION_TICKS, COMB_MAX_VIBRATION_TICKS);
+    let pitch_factor = ((tooth.midi_note - 60) as f32 * 0.35).clamp(-5.0, 8.0);
+    let vibration_hz = 18.0 + pitch_factor;
+    let damping = (5.5 - velocity * 1.7 + protrusion_ratio * 2.5).clamp(3.8, 6.8);
+    CombAnimationEvent {
+        midi_note: tooth.midi_note,
+        onset_tick: tooth.onset_tick,
+        pluck_start_tick: tooth.onset_tick - pluck_ticks,
+        release_tick: tooth.onset_tick,
+        max_deflection_rad,
+        vibration_ticks,
+        vibration_hz,
+        damping,
+        smear_samples: COMB_GHOST_SAMPLES.len(),
+        source_protrusion: tooth.protrusion,
+        source_tooth_length: tooth.length_along_rotation,
+        source_velocity: velocity,
+    }
 }
 
 fn debug_state_json(
@@ -1479,11 +1655,13 @@ fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) ->
         "calibration": calibration,
         "timing": timing,
         "comb_animation": {
-            "pluck_window_ticks": COMB_PLUCK_WINDOW_TICKS,
-            "vibration_ticks": COMB_VIBRATION_TICKS,
-            "max_deflection_rad": COMB_MAX_DEFLECTION_RAD,
-            "vibration_hz": COMB_VIBRATION_HZ,
-            "damping": COMB_VIBRATION_DAMPING,
+            "event_count": mechanism.comb_animation_events.len(),
+            "min_pluck_ticks": COMB_MIN_PLUCK_TICKS,
+            "max_pluck_ticks": COMB_MAX_PLUCK_TICKS,
+            "min_vibration_ticks": COMB_MIN_VIBRATION_TICKS,
+            "max_vibration_ticks": COMB_MAX_VIBRATION_TICKS,
+            "ghost_samples": COMB_GHOST_SAMPLES.len(),
+            "ghost_phase_offsets": COMB_GHOST_SAMPLES,
             "release_alignment_preview": release_alignment_preview(mechanism),
         },
         "comb": {
@@ -1560,8 +1738,10 @@ fn load_mechanism_layout() -> MechanismResource {
     planner.cylinder_length = track_count.max(1) as f32;
     planner.ticks_per_turn = ticks_per_turn;
     let hint = planner.plan(&timeline);
+    let comb_animation_events = derive_comb_animation_events(&hint, ticks_per_turn);
     MechanismResource {
         hint,
+        comb_animation_events,
         ticks_per_turn,
         quarter_millis: timeline.tempo.ticks_to_millis(PPQ),
     }
@@ -1868,6 +2048,7 @@ mod tests {
                 events: Vec::new(),
                 diagnostics: Vec::new(),
             },
+            comb_animation_events: Vec::new(),
             ticks_per_turn: PPQ * 4,
             quarter_millis: 500,
         };
@@ -1966,20 +2147,66 @@ mod tests {
     #[test]
     fn comb_tine_release_is_aligned_to_audio_onset() {
         let mechanism = load_mechanism_layout();
-        let event = mechanism.hint.events.first().unwrap();
-        let pluck_start = event.onset_tick - COMB_PLUCK_WINDOW_TICKS;
-        let before_pluck = comb_tine_deflection(event.midi_note, pluck_start - 1, &mechanism);
-        let pre_release = comb_tine_deflection(event.midi_note, event.onset_tick - 1, &mechanism);
-        let at_release = comb_tine_deflection(event.midi_note, event.onset_tick, &mechanism);
-        let after_release = comb_tine_deflection(event.midi_note, event.onset_tick + 1, &mechanism);
+        let event = mechanism.comb_animation_events.first().unwrap();
+        let before_pluck = comb_tine_sample(
+            event.midi_note,
+            event.pluck_start_tick - 1,
+            None,
+            &mechanism,
+        )
+        .map(|sample| sample.deflection_rad)
+        .unwrap_or(0.0);
+        let pre_release =
+            comb_tine_sample(event.midi_note, event.release_tick - 1, None, &mechanism)
+                .unwrap()
+                .deflection_rad;
+        let at_release = comb_tine_sample(event.midi_note, event.release_tick, None, &mechanism)
+            .unwrap()
+            .deflection_rad;
+        let ghost_at_release = comb_tine_sample(
+            event.midi_note,
+            event.release_tick,
+            Some(COMB_GHOST_SAMPLES[0]),
+            &mechanism,
+        )
+        .unwrap();
 
         assert_eq!(before_pluck, 0.0);
         assert!(pre_release < 0.0);
         assert!(at_release < 0.0);
-        assert_ne!(after_release, 0.0);
+        assert!(ghost_at_release.visible);
 
         let preview = release_alignment_preview(&mechanism);
         assert_eq!(preview[0]["onset_tick"], preview[0]["release_tick"]);
         assert_eq!(preview[0]["release_equals_audio_onset"], true);
+    }
+
+    #[test]
+    fn comb_animation_is_derived_from_tooth_hint_strength() {
+        let weak = ToothHint {
+            midi_note: 60,
+            onset_tick: PPQ,
+            angle_rad: 0.0,
+            axial_position: 0.0,
+            radius: 18.0,
+            protrusion: 0.7,
+            width: 0.5,
+            length_along_rotation: 0.6,
+            velocity_hint: 0.2,
+        };
+        let strong = ToothHint {
+            protrusion: 1.5,
+            length_along_rotation: 1.8,
+            velocity_hint: 0.9,
+            ..weak.clone()
+        };
+
+        let weak_event = derive_comb_animation_event(&weak, PPQ * 8);
+        let strong_event = derive_comb_animation_event(&strong, PPQ * 8);
+
+        assert!(strong_event.pluck_start_tick < weak_event.pluck_start_tick);
+        assert!(strong_event.max_deflection_rad > weak_event.max_deflection_rad);
+        assert!(strong_event.vibration_ticks > weak_event.vibration_ticks);
+        assert_eq!(strong_event.release_tick, strong.onset_tick);
     }
 }
