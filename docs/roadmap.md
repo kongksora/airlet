@@ -357,6 +357,60 @@ Implementation checklist:
 - [x] Keep the endpoint opt-out/opt-in safe for local development and document
   the future MCP adapter boundary.
 
+### MCP, Comb Calibration, And Material Pass
+
+The local debug endpoint is now stable enough to wrap with MCP. The next pass
+must also correct the physical mechanism layout: the comb track range, cylinder
+tooth axial positions, and audio onset ticks must share one mapping so a visual
+tooth reaches the matching comb tine exactly when the audio note starts.
+
+Implementation checklist:
+
+- [x] Add a full MCP server that exposes the Airlet debug actions as tools.
+- [x] Keep MCP as a separate adapter process over the JSON debug endpoint.
+- [x] Calibrate comb note range from the actual `MechanismLayoutHint` events
+  and fit it within the model cylinder length.
+- [x] Remap tooth axial positions and comb tine positions through the same
+  note-to-track function.
+- [x] Add structured mechanism debug output with note range, track count, track
+  spacing, cylinder dimensions, and preview tooth positions.
+- [x] Keep the demo scene explicitly on a white circular platform.
+- [x] Add suitable procedural metal materials for the procedural cylinder,
+  teeth, and comb.
+- [x] Validate MCP tools, screenshot output, and mechanism geometry.
+- [x] Record what extra PBR assets are needed for full-model materialization and
+  which assets can be generated locally.
+
+Validation notes:
+
+- MCP adapter: `uv run --project py airlet-mcp` imports through
+  `mcp.server.fastmcp.FastMCP`; `dump_mechanism` was smoke-tested through the
+  tool wrapper against a running app.
+- Current score range: MIDI `66..86`, `21` comb tracks.
+- Current model cylinder: length `0.16361199`, calibrated usable length
+  `0.14070632`, track spacing `0.00703532`.
+- There are no remaining `outside comb range` diagnostics. Existing mechanism
+  diagnostics are same-angle dense-tooth hints caused by simultaneous notes.
+- Screenshot validation:
+  `target/airlet-debug-action-shot.png`, `1280x800`, mean brightness
+  `0.326768`.
+
+Full-model material assets:
+
+- Can be generated immediately: procedural metal parameters for cylinder,
+  teeth, comb, screws, and hinge hardware; generated brushed-metal normal and
+  roughness maps; simple lacquered-color base materials; generated AO helper
+  maps for procedural parts.
+- Should be downloaded or authored for high-quality final rendering: wood or
+  lacquered-box PBR texture set, brass/gold PBR texture set if procedural metal
+  is not enough, velvet/felt liner texture if the open box interior is exposed,
+  engraved logo/name/date artwork, and an HDRI studio environment for
+  reflections.
+- Preferred texture formats: PNG or TGA for base color, normal, roughness,
+  metallic, AO, and height maps; 2K is enough for the demo, 4K is preferable for
+  close-up gift renders. For glTF export, pack ORM as occlusion/roughness/
+  metallic channels when possible. HDRI should be `.hdr` or `.exr`.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the

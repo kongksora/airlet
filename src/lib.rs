@@ -39,6 +39,7 @@ const TOOTH_HEIGHT_RATIO: f32 = 0.26;
 const COMB_TINE_LENGTH_RATIO: f32 = 1.35;
 const COMB_TINE_WIDTH_RATIO: f32 = 0.035;
 const COMB_TINE_THICKNESS_RATIO: f32 = 0.025;
+const COMB_TRACK_USABLE_LENGTH_RATIO: f32 = 0.86;
 const DEFAULT_DEBUG_BIND: &str = "127.0.0.1:4777";
 
 pub fn run() {
@@ -55,8 +56,8 @@ pub fn run() {
         .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.035, 0.034, 0.032)))
         .insert_resource(GlobalAmbientLight {
-            color: Color::srgb(0.86, 0.82, 0.76),
-            brightness: 95.0,
+            color: Color::srgb(0.78, 0.75, 0.70),
+            brightness: 38.0,
             ..default()
         })
         .init_resource::<ExhibitControls>()
@@ -114,7 +115,7 @@ impl Default for ExhibitControls {
             light_distance: 5.2,
             spot_inner_angle: 0.34,
             spot_outer_angle: 0.78,
-            spot_intensity: 1_050_000.0,
+            spot_intensity: 1_450_000.0,
             volume: 0.75,
             playback: PlaybackCommand::Idle,
             lid_t: env_f32("AIRLET_LID_T", 0.0).clamp(0.0, 1.0),
@@ -146,6 +147,17 @@ struct MechanismResource {
     hint: MechanismLayoutHint,
     ticks_per_turn: i64,
     quarter_millis: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct MechanismCalibration {
+    lowest_midi: i32,
+    highest_midi: i32,
+    track_count: usize,
+    cylinder_length: f32,
+    usable_length: f32,
+    side_margin: f32,
+    track_spacing: f32,
 }
 
 #[derive(Resource)]
@@ -425,7 +437,7 @@ fn setup_scene(
     commands.spawn((
         Name::new("Key Directional Light"),
         DirectionalLight {
-            illuminance: 1_500.0,
+            illuminance: 700.0,
             shadow_maps_enabled: true,
             ..default()
         },
@@ -938,6 +950,7 @@ fn spawn_hint_mechanism(
     let (radial_zero, tangent_zero) = cylinder_radial_frame(axis);
     let cylinder_radius = model.spec().cylinder.radius.max(0.01);
     let cylinder_length = model.spec().cylinder.length.max(0.01);
+    let calibration = mechanism_calibration(hint, cylinder_length);
     let tooth_protrusion = cylinder_radius * TOOTH_RADIAL_PROTRUSION_RATIO;
     let tooth_width = cylinder_length * TOOTH_WIDTH_RATIO;
     let tooth_height = cylinder_radius * TOOTH_HEIGHT_RATIO;
@@ -945,21 +958,24 @@ fn spawn_hint_mechanism(
     let comb_tine_width = cylinder_length * COMB_TINE_WIDTH_RATIO;
     let comb_tine_thickness = cylinder_radius * COMB_TINE_THICKNESS_RATIO;
     let cylinder_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.96, 0.73, 0.24),
-        metallic: 0.15,
-        perceptual_roughness: 0.44,
+        base_color: Color::srgb(0.94, 0.69, 0.23),
+        metallic: 0.88,
+        perceptual_roughness: 0.24,
+        reflectance: 0.78,
         ..default()
     });
     let tooth_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.83, 0.28),
-        metallic: 0.2,
-        perceptual_roughness: 0.35,
+        base_color: Color::srgb(1.0, 0.78, 0.25),
+        metallic: 0.92,
+        perceptual_roughness: 0.20,
+        reflectance: 0.82,
         ..default()
     });
     let comb_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.82, 0.86, 0.86),
-        metallic: 0.55,
-        perceptual_roughness: 0.28,
+        base_color: Color::srgb(0.74, 0.77, 0.76),
+        metallic: 0.94,
+        perceptual_roughness: 0.18,
+        reflectance: 0.88,
         ..default()
     });
 
@@ -984,12 +1000,11 @@ fn spawn_hint_mechanism(
     for tooth in &hint.events {
         let transform = tooth_transform(
             tooth,
-            hint,
             axis,
             radial_zero,
             tangent_zero,
             cylinder_radius,
-            cylinder_length,
+            &calibration,
             tooth_height,
         );
         let entity = commands
@@ -1016,7 +1031,7 @@ fn spawn_hint_mechanism(
     notes.sort_unstable();
     notes.dedup();
     for midi_note in notes {
-        let axial = note_axial_position(midi_note, hint, cylinder_length);
+        let axial = note_axial_position(midi_note, &calibration);
         let position = axis * axial + radial_zero * (cylinder_radius + comb_tine_length * 0.55)
             - tangent_zero * 0.018;
         let rotation = basis_rotation(axis, -radial_zero, tangent_zero);
@@ -1206,18 +1221,32 @@ fn debug_state_json(
 }
 
 fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) -> Value {
+    let cylinder_length = model.model.spec().cylinder.length.max(0.01);
+    let calibration = mechanism_calibration(&mechanism.hint, cylinder_length);
     let teeth = mechanism
         .hint
         .events
         .iter()
         .take(64)
         .map(|event| {
+            let track_index = track_index(event.midi_note, &calibration);
             json!({
                 "midi_note": event.midi_note,
+                "track_index": track_index,
                 "onset_tick": event.onset_tick,
                 "angle_rad": event.angle_rad,
-                "axial_position": event.axial_position,
+                "source_axial_position": event.axial_position,
+                "model_axial_position": note_axial_position(event.midi_note, &calibration),
                 "velocity_hint": event.velocity_hint,
+            })
+        })
+        .collect::<Vec<_>>();
+    let comb_tracks = (calibration.lowest_midi..=calibration.highest_midi)
+        .map(|midi_note| {
+            json!({
+                "midi_note": midi_note,
+                "track_index": track_index(midi_note, &calibration),
+                "model_axial_position": note_axial_position(midi_note, &calibration),
             })
         })
         .collect::<Vec<_>>();
@@ -1228,6 +1257,16 @@ fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) ->
             "pivot": model.model.spec().cylinder.pivot,
             "axis": model.model.spec().cylinder.axis,
             "ticks_per_turn": mechanism.ticks_per_turn,
+        },
+        "calibration": calibration,
+        "comb": {
+            "lowest_midi": calibration.lowest_midi,
+            "highest_midi": calibration.highest_midi,
+            "track_count": calibration.track_count,
+            "usable_length": calibration.usable_length,
+            "side_margin": calibration.side_margin,
+            "track_spacing": calibration.track_spacing,
+            "tracks": comb_tracks,
         },
         "hint": {
             "source_radius": mechanism.hint.cylinder_radius,
@@ -1251,7 +1290,22 @@ fn load_movable_model() -> ModelResource {
 fn load_mechanism_layout() -> MechanismResource {
     let plan = defaults::air_intro_plan();
     let timeline = plan.composed_score().expand();
-    let planner = MechanismPlanner::default();
+    let note_range = timeline
+        .events
+        .iter()
+        .filter(|event| event.midi_note > 0)
+        .map(|event| event.midi_note)
+        .fold(None, |range: Option<(i32, i32)>, midi| match range {
+            Some((lowest, highest)) => Some((lowest.min(midi), highest.max(midi))),
+            None => Some((midi, midi)),
+        });
+    let (lowest_midi, highest_midi) = note_range.unwrap_or((60, 60));
+    let track_count = highest_midi - lowest_midi + 1;
+    let mut planner = MechanismPlanner::default();
+    planner.lowest_midi = lowest_midi.min(highest_midi);
+    planner.highest_midi = highest_midi.max(lowest_midi);
+    planner.track_spacing = 1.0;
+    planner.cylinder_length = track_count.max(1) as f32;
     let ticks_per_turn = planner.ticks_per_turn;
     let hint = planner.plan(&timeline);
     MechanismResource {
@@ -1263,41 +1317,64 @@ fn load_mechanism_layout() -> MechanismResource {
 
 fn tooth_transform(
     tooth: &ToothHint,
-    hint: &MechanismLayoutHint,
     axis: Vec3,
     radial_zero: Vec3,
     tangent_zero: Vec3,
     cylinder_radius: f32,
-    cylinder_length: f32,
+    calibration: &MechanismCalibration,
     tooth_height: f32,
 ) -> Transform {
     let angle = tooth.angle_rad;
     let radial = radial_zero * angle.cos() + tangent_zero * angle.sin();
     let tangent = (-radial_zero * angle.sin() + tangent_zero * angle.cos()).normalize_or_zero();
-    let axial = hint_axial_position(tooth.axial_position, hint, cylinder_length);
+    let axial = note_axial_position(tooth.midi_note, calibration);
     let position = axis * axial + radial * (cylinder_radius + tooth_height * 0.48);
     Transform::from_translation(position).with_rotation(basis_rotation(axis, radial, tangent))
 }
 
-fn note_axial_position(midi_note: i32, hint: &MechanismLayoutHint, cylinder_length: f32) -> f32 {
-    hint.events
+fn mechanism_calibration(hint: &MechanismLayoutHint, cylinder_length: f32) -> MechanismCalibration {
+    let (lowest_midi, highest_midi) = hint
+        .events
         .iter()
-        .find(|event| event.midi_note == midi_note)
-        .map(|event| hint_axial_position(event.axial_position, hint, cylinder_length))
-        .unwrap_or(0.0)
+        .map(|event| event.midi_note)
+        .fold((i32::MAX, i32::MIN), |(lowest, highest), midi| {
+            (lowest.min(midi), highest.max(midi))
+        });
+    let (lowest_midi, highest_midi) = if lowest_midi <= highest_midi {
+        (lowest_midi, highest_midi)
+    } else {
+        (60, 60)
+    };
+    let track_count = (highest_midi - lowest_midi + 1).max(1) as usize;
+    let usable_length = cylinder_length * COMB_TRACK_USABLE_LENGTH_RATIO;
+    let side_margin = (cylinder_length - usable_length) * 0.5;
+    let track_spacing = if track_count > 1 {
+        usable_length / (track_count - 1) as f32
+    } else {
+        0.0
+    };
+    MechanismCalibration {
+        lowest_midi,
+        highest_midi,
+        track_count,
+        cylinder_length,
+        usable_length,
+        side_margin,
+        track_spacing,
+    }
 }
 
-fn hint_axial_position(
-    axial_position: f32,
-    hint: &MechanismLayoutHint,
-    cylinder_length: f32,
-) -> f32 {
-    let normalized = if hint.cylinder_length.abs() <= f32::EPSILON {
+fn track_index(midi_note: i32, calibration: &MechanismCalibration) -> usize {
+    (midi_note - calibration.lowest_midi).max(0) as usize
+}
+
+fn note_axial_position(midi_note: i32, calibration: &MechanismCalibration) -> f32 {
+    if calibration.track_count <= 1 {
         0.0
     } else {
-        axial_position / hint.cylinder_length - 0.5
-    };
-    normalized * cylinder_length
+        let track = track_index(midi_note, calibration).min(calibration.track_count - 1);
+        -calibration.usable_length * 0.5 + track as f32 * calibration.track_spacing
+    }
 }
 
 fn cylinder_radial_frame(axis: Vec3) -> (Vec3, Vec3) {
@@ -1378,5 +1455,49 @@ mod tests {
         assert_eq!(synced_cylinder_degrees(0.0, &mechanism), -0.0);
         assert_eq!(synced_cylinder_degrees(1.0, &mechanism), -180.0);
         assert_eq!(synced_cylinder_degrees(2.0, &mechanism), -0.0);
+    }
+
+    #[test]
+    fn calibration_maps_notes_to_even_comb_tracks() {
+        let hint = MechanismLayoutHint {
+            cylinder_radius: 18.0,
+            cylinder_length: 12.0,
+            track_spacing: 1.0,
+            events: vec![
+                ToothHint {
+                    midi_note: 60,
+                    onset_tick: 0,
+                    angle_rad: 0.0,
+                    axial_position: 0.0,
+                    radius: 18.0,
+                    protrusion: 1.0,
+                    width: 0.8,
+                    length_along_rotation: 1.2,
+                    velocity_hint: 0.8,
+                },
+                ToothHint {
+                    midi_note: 64,
+                    onset_tick: PPQ,
+                    angle_rad: 1.0,
+                    axial_position: 4.0,
+                    radius: 18.0,
+                    protrusion: 1.0,
+                    width: 0.8,
+                    length_along_rotation: 1.2,
+                    velocity_hint: 0.8,
+                },
+            ],
+            diagnostics: Vec::new(),
+        };
+
+        let calibration = mechanism_calibration(&hint, 10.0);
+
+        assert_eq!(calibration.lowest_midi, 60);
+        assert_eq!(calibration.highest_midi, 64);
+        assert_eq!(calibration.track_count, 5);
+        assert!((calibration.usable_length - 8.6).abs() < 1e-5);
+        assert!((note_axial_position(60, &calibration) + 4.3).abs() < 1e-5);
+        assert!(note_axial_position(62, &calibration).abs() < 1e-5);
+        assert!((note_axial_position(64, &calibration) - 4.3).abs() < 1e-5);
     }
 }

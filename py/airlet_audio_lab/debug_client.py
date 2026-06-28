@@ -17,16 +17,23 @@ def main() -> None:
     args = parser.parse_args()
 
     request = _parse_action(args.action)
-    host, port = _parse_addr(args.addr)
-    with socket.create_connection((host, port), timeout=5.0) as stream:
-        payload = json.dumps(request, separators=(",", ":")) + "\n"
-        stream.sendall(payload.encode("utf-8"))
-        response = _read_line(stream)
-    parsed = json.loads(response)
+    parsed = send_action(request, args.addr)
     json.dump(parsed, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
     if not parsed.get("ok", False):
         raise SystemExit(1)
+
+
+def send_action(action: dict[str, Any], addr: str = DEFAULT_ADDR) -> dict[str, Any]:
+    host, port = _parse_addr(addr)
+    with socket.create_connection((host, port), timeout=5.0) as stream:
+        payload = json.dumps(action, separators=(",", ":")) + "\n"
+        stream.sendall(payload.encode("utf-8"))
+        response = _read_line(stream)
+    parsed = json.loads(response)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("debug endpoint returned a non-object response")
+    return parsed
 
 
 def _parse_action(action: str) -> dict[str, Any]:
