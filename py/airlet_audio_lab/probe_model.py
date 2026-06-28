@@ -32,6 +32,7 @@ class MeshProbe:
     bounds: list[list[float]]
     center: list[float]
     extent: list[float]
+    pca_axes: list[list[float]]
     cluster: str
     role: str
 
@@ -76,6 +77,7 @@ def main() -> None:
                 bounds=_round_array(mesh["bounds"]),
                 center=_round_vec(mesh["center"]),
                 extent=_round_vec(mesh["extent"]),
+                pca_axes=mesh["pca_axes"],
                 cluster=cluster_name,
                 role=role,
             )
@@ -93,10 +95,20 @@ def main() -> None:
     ]
     cluster_probes.sort(key=lambda cluster: cluster.name)
 
-    basis = _estimate_basis(meshes, labels, closed_label)
-    lid = _largest_role_mesh(probes, "lid")
+    lid_probe = _largest_role_mesh(probes, "lid")
+    lid = _mesh_by_geometry(meshes, lid_probe.geometry)
     open_lid = _open_lid_reference(meshes, labels, open_label)
-    hinge = _estimate_hinge(lid, open_lid, basis)
+    basis = _estimate_basis(lid_probe)
+    hinge = _estimate_hinge(
+        lid_probe=lid_probe,
+        lid_mesh=lid,
+        open_lid=open_lid,
+        meshes=meshes,
+        labels=labels,
+        closed_label=closed_label,
+        open_label=open_label,
+        basis=basis,
+    )
 
     payload = {
         "model": str(args.model),
@@ -133,11 +145,13 @@ def _collect_meshes(scene: trimesh.Scene) -> list[dict[str, Any]]:
         vertices = np.c_[geometry.vertices, np.ones(len(geometry.vertices))]
         points = (vertices @ matrix.T)[:, :3]
         bounds = np.array([points.min(axis=0), points.max(axis=0)])
+        pca_axes = _pca_axes(points)
         meshes.append(
             {
                 "node": str(node),
                 "geometry": str(geometry_name),
                 "points": points,
+                "pca_axes": pca_axes,
                 "bounds": bounds,
                 "center": bounds.mean(axis=0),
                 "extent": bounds[1] - bounds[0],
@@ -157,6 +171,13 @@ def _cluster_by_x(meshes: list[dict[str, Any]]) -> np.ndarray:
             break
         centers = next_centers
     return labels
+
+
+def _pca_axes(points: np.ndarray) -> list[list[float]]:
+    centered = points - points.mean(axis=0)
+    values, vectors = np.linalg.eigh(np.cov(centered.T))
+    axes = vectors[:, np.argsort(values)[::-1]].T
+    return [_round_vec(axis / np.linalg.norm(axis)) for axis in axes]
 
 
 def _summarize_clusters(
@@ -205,6 +226,13 @@ def _largest_role_mesh(probes: list[MeshProbe], role: str) -> MeshProbe:
     return max(matches, key=lambda probe: np.prod(np.array(probe.extent)))
 
 
+def _mesh_by_geometry(meshes: list[dict[str, Any]], geometry: str) -> dict[str, Any]:
+    for mesh in meshes:
+        if mesh["geometry"] == geometry:
+            return mesh
+    raise RuntimeError(f"no mesh with geometry {geometry}")
+
+
 def _open_lid_reference(
     meshes: list[dict[str, Any]], labels: np.ndarray, open_label: int
 ) -> dict[str, Any]:
@@ -228,54 +256,234 @@ def _open_lid_reference(
     )
 
 
-def _estimate_hinge(
-    lid: MeshProbe, open_lid: dict[str, Any], basis: dict[str, list[float]]
+def _fit_body_alignment(
+    meshes: list[dict[str, Any]], labels: np.ndarray, closed_label: int, open_label: int
 ) -> dict[str, Any]:
-    lid_bounds = np.array(lid.bounds)
-    open_bounds = open_lid["bounds"]
-    lid_axis = np.array(basis["right"])
-    pivot = [
-        float((lid_bounds[0][0] + lid_bounds[1][0]) * 0.5),
-        float(lid_bounds[0][1]),
-        float(lid_bounds[0][2]),
-    ]
-    closed_depth = float(lid_bounds[1][2] - lid_bounds[0][2])
-    open_vertical = float(open_bounds[1][1] - open_bounds[0][1])
-    open_angle = -float(np.degrees(np.arctan2(open_vertical, max(closed_depth, 1e-6))))
+    closed = [mesh for mesh, label in zip(meshes, labels) if label == closed_label]
+    opened = [mesh for mesh, label in zip(meshes, labels) if label == open_label]
+    fits = []
+    for closed_mesh in closed:
+        closed_volume = float(np.prod(closed_mesh["extent"]))
+        if closed_volume < 0.01:
+            continue
+        for open_mesh in opened:
+            if len(closed_mesh["points"]) != len(open_mesh["points"]):
+                continue
+            extent_error = np.linalg.norm(
+                np.sort(closed_mesh["extent"]) - np.sort(open_mesh["extent"])
+            )
+            if extent_error > 1e-4:
+                continue
+            rotation, translation, errors = _fit_rigid_transform(
+                open_mesh["points"], closed_mesh["points"]
+            )
+            rms_error = float(np.sqrt(np.mean(errors * errors)))
+            fits.append(
+                {
+                    "closed_mesh": closed_mesh["geometry"],
+                    "open_mesh": open_mesh["geometry"],
+                    "rotation": rotation,
+                    "translation": translation,
+                    "rms_error": rms_error,
+                    "max_error": float(errors.max()),
+                    "volume": closed_volume,
+                }
+            )
+    if not fits:
+        raise RuntimeError("could not find a paired closed/open body mesh")
+    precise = [fit for fit in fits if fit["rms_error"] < 1e-5 and fit["max_error"] < 1e-4]
+    if precise:
+        return max(precise, key=lambda fit: fit["volume"])
+    return min(fits, key=lambda fit: (fit["rms_error"], -fit["volume"]))
+
+
+def _fit_rigid_transform(
+    source: np.ndarray, target: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    source_center = source.mean(axis=0)
+    target_center = target.mean(axis=0)
+    covariance = (source - source_center).T @ (target - target_center)
+    left, _, right_t = np.linalg.svd(covariance)
+    rotation = right_t.T @ left.T
+    if np.linalg.det(rotation) < 0.0:
+        right_t[-1] *= -1.0
+        rotation = right_t.T @ left.T
+    translation = target_center - rotation @ source_center
+    errors = np.linalg.norm(_apply_rigid_transform(source, rotation, translation) - target, axis=1)
+    return rotation, translation, errors
+
+
+def _apply_rigid_transform(
+    points: np.ndarray, rotation: np.ndarray, translation: np.ndarray
+) -> np.ndarray:
+    return points @ rotation.T + translation
+
+
+def _pca_frame(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    center = points.mean(axis=0)
+    centered = points - center
+    values, vectors = np.linalg.eigh(np.cov(centered.T))
+    axes = vectors[:, np.argsort(values)[::-1]].T
+    return center, axes
+
+
+def _moving_hinge_meshes(
+    meshes: list[dict[str, Any]],
+    labels: np.ndarray,
+    closed_label: int,
+    lid_mesh: dict[str, Any],
+    basis: dict[str, list[float]],
+) -> list[int]:
+    front = np.array(basis["front"], dtype=float)
+    up = np.array(basis["up"], dtype=float)
+    lid_points = lid_mesh["points"]
+    lid_front = lid_points @ front
+    lid_up = lid_points @ up
+    rear_threshold = lid_front.max() - 0.08
+    lower_up = lid_up.min() - 0.03
+    upper_up = lid_up.min() + 0.09
+    candidates = []
+    for mesh, label in zip(meshes, labels):
+        if label != closed_label or mesh["geometry"] == lid_mesh["geometry"]:
+            continue
+        index = _mesh_index(mesh["geometry"])
+        center_front = float(mesh["center"] @ front)
+        center_up = float(mesh["center"] @ up)
+        max_extent = float(mesh["extent"].max())
+        if center_front >= rear_threshold and lower_up <= center_up <= upper_up and max_extent < 0.09:
+            candidates.append(index)
+    return sorted(candidates)
+
+
+def _hinge_axis_from_meshes(
+    meshes: list[dict[str, Any]], hinge_meshes: list[int]
+) -> np.ndarray | None:
+    centers = []
+    for index in hinge_meshes:
+        name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
+        mesh = next((item for item in meshes if item["geometry"] == name), None)
+        if mesh is not None:
+            centers.append(mesh["center"])
+    if len(centers) < 2:
+        return None
+    _, axes = _pca_frame(np.array(centers))
+    axis = axes[0]
+    axis[1] = 0.0
+    if np.linalg.norm(axis) <= 1e-6:
+        return None
+    return axis / np.linalg.norm(axis)
+
+
+def _hinge_pivot(
+    meshes: list[dict[str, Any]],
+    hinge_meshes: list[int],
+    lid_mesh: dict[str, Any],
+    hinge_axis: np.ndarray,
+    basis: dict[str, list[float]],
+) -> np.ndarray:
+    centers = []
+    for index in hinge_meshes:
+        name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
+        mesh = next((item for item in meshes if item["geometry"] == name), None)
+        if mesh is not None:
+            centers.append(mesh["center"])
+    if centers:
+        return np.array(centers).mean(axis=0)
+
+    front = np.array(basis["front"], dtype=float)
+    up = np.array(basis["up"], dtype=float)
+    points = lid_mesh["points"]
+    rear = points @ front
+    lower = points @ up
+    edge_points = points[(rear > rear.max() - 0.02) & (lower < lower.min() + 0.03)]
+    if len(edge_points) == 0:
+        edge_points = points[rear > rear.max() - 0.02]
+    pivot = edge_points.mean(axis=0)
+    return pivot - hinge_axis * np.dot(pivot, hinge_axis)
+
+
+def _orient_axis(axis: np.ndarray, preferred: np.ndarray) -> np.ndarray:
+    axis = axis / np.linalg.norm(axis)
+    if np.dot(axis, preferred) < 0.0:
+        axis = -axis
+    return axis
+
+
+def _estimate_hinge(
+    *,
+    lid_probe: MeshProbe,
+    lid_mesh: dict[str, Any],
+    open_lid: dict[str, Any],
+    meshes: list[dict[str, Any]],
+    labels: np.ndarray,
+    closed_label: int,
+    open_label: int,
+    basis: dict[str, list[float]],
+) -> dict[str, Any]:
+    body_fit = _fit_body_alignment(meshes, labels, closed_label, open_label)
+    open_points = _apply_rigid_transform(
+        open_lid["points"], body_fit["rotation"], body_fit["translation"]
+    )
+    closed_points = lid_mesh["points"]
+    closed_center, closed_axes = _pca_frame(closed_points)
+    open_center, open_axes = _pca_frame(open_points)
+    closed_normal = closed_axes[2]
+    open_normal = open_axes[2]
+    if closed_normal[1] < 0.0:
+        closed_normal = -closed_normal
+    if np.dot(closed_normal, open_normal) < 0.0:
+        open_normal = -open_normal
+
+    hinge_meshes = _moving_hinge_meshes(meshes, labels, closed_label, lid_mesh, basis)
+    hinge_axis = _hinge_axis_from_meshes(meshes, hinge_meshes)
+    if hinge_axis is None:
+        hinge_axis = np.cross(closed_normal, open_normal)
+    hinge_axis = _orient_axis(hinge_axis, np.array(basis["right"], dtype=float))
+
+    signed_angle = np.degrees(
+        np.arctan2(
+            np.dot(hinge_axis, np.cross(closed_normal, open_normal)),
+            np.dot(closed_normal, open_normal),
+        )
+    )
+    open_angle = -abs(float(signed_angle))
+    pivot = _hinge_pivot(meshes, hinge_meshes, lid_mesh, hinge_axis, basis)
     return {
-        "status": "heuristic",
-        "closed_lid_mesh": lid.geometry,
+        "status": "paired_geometry",
+        "body_alignment": {
+            "closed_body_mesh": body_fit["closed_mesh"],
+            "open_body_mesh": body_fit["open_mesh"],
+            "rms_error": round(float(body_fit["rms_error"]), 9),
+            "max_error": round(float(body_fit["max_error"]), 9),
+        },
+        "closed_lid_mesh": lid_probe.geometry,
         "open_reference_lid_mesh": open_lid["geometry"],
-        "pivot": _round_vec(np.array(pivot)),
-        "axis": _round_vec(lid_axis),
+        "moving_hinge_meshes": hinge_meshes,
+        "pivot": _round_vec(pivot),
+        "axis": _round_vec(hinge_axis),
         "closed_angle_degrees": 0.0,
-        "open_angle_degrees": round(max(-110.0, min(-65.0, open_angle)), 3),
-        "note": "Pivot is the closed lid rear/top edge; verify visually before rigging.",
+        "open_angle_degrees": round(open_angle, 3),
+        "note": "Body alignment is Kabsch-fitted from paired body meshes; hinge axis is fitted from hinge hardware when available.",
     }
 
 
-def _estimate_basis(
-    meshes: list[dict[str, Any]], labels: np.ndarray, closed_label: int
-) -> dict[str, list[float]]:
-    group = [mesh for mesh, label in zip(meshes, labels) if label == closed_label]
-    points = np.concatenate([mesh["points"] for mesh in group], axis=0)
-    centered = points - points.mean(axis=0)
-    values, vectors = np.linalg.eigh(np.cov(centered.T))
-    axes = vectors[:, np.argsort(values)[::-1]].T
-    up = axes[np.argmax(np.abs(axes[:, 1]))]
-    if up[1] < 0.0:
-        up = -up
-    horizontal = [axis for axis in axes if abs(np.dot(axis, up)) < 0.75]
-    front = max(horizontal, key=lambda axis: abs(axis[2]))
+def _estimate_basis(lid: MeshProbe) -> dict[str, list[float]]:
+    lid_axis = _horizontal_axis_from_pca(lid.pca_axes)
+    right = lid_axis
+    up = np.array([0.0, 1.0, 0.0])
+    front = np.cross(up, right)
+    right /= np.linalg.norm(right)
+    front /= np.linalg.norm(front)
     if front[2] > 0.0:
         front = -front
+        right = -right
     right = np.cross(front, up)
     right /= np.linalg.norm(right)
     front = np.cross(up, right)
     front /= np.linalg.norm(front)
     return {
         "right": _round_vec(right),
-        "up": _round_vec(up / np.linalg.norm(up)),
+        "up": _round_vec(up),
         "front": _round_vec(front),
     }
 
@@ -314,8 +522,12 @@ def _render_report(payload: dict[str, Any]) -> str:
             "",
             "## Lid Animation Estimate",
             "",
+            f"- Status: `{estimate['status']}`",
+            f"- Body pair: `{estimate['body_alignment']['closed_body_mesh']}` / `{estimate['body_alignment']['open_body_mesh']}`",
+            f"- Body alignment RMS: `{estimate['body_alignment']['rms_error']}`",
             f"- Closed lid mesh: `{estimate['closed_lid_mesh']}`",
             f"- Open reference lid mesh: `{estimate['open_reference_lid_mesh']}`",
+            f"- Moving hinge meshes: `{estimate['moving_hinge_meshes']}`",
             f"- Pivot: `{estimate['pivot']}`",
             f"- Axis: `{estimate['axis']}`",
             f"- Open angle: `{estimate['open_angle_degrees']}` degrees",
@@ -344,18 +556,22 @@ def _render_spec_draft(payload: dict[str, Any]) -> str:
         for role in ["body", "lid", "hinge", "handle", "mechanism"]
     }
     unknown = [int(_mesh_index(mesh["geometry"])) for mesh in closed if mesh["role"] == "unknown"]
-    mechanism_sorted = sorted(roles["mechanism"], key=lambda index: abs(index - 29))
-    cylinder_meshes = mechanism_sorted[:4] if len(mechanism_sorted) >= 4 else mechanism_sorted
+    preferred_cylinder = [26, 27, 29, 36]
+    cylinder_meshes = [index for index in preferred_cylinder if index in roles["mechanism"]]
+    if not cylinder_meshes:
+        mechanism_sorted = sorted(roles["mechanism"], key=lambda index: abs(index - 29))
+        cylinder_meshes = mechanism_sorted[:4] if len(mechanism_sorted) >= 4 else mechanism_sorted
+    estimate = payload["lid_animation_estimate"]
+    moving_hinges = [int(index) for index in estimate["moving_hinge_meshes"]]
+    lid_meshes = sorted(set(roles["lid"] + moving_hinges))
     body = sorted(
-        set(roles["body"] + roles["hinge"] + roles["handle"] + roles["mechanism"] + unknown)
+        set(roles["body"] + roles["handle"] + roles["mechanism"] + unknown)
         - set(cylinder_meshes)
-        - set(roles["lid"])
+        - set(lid_meshes)
     )
     closed_cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
-    estimate = payload["lid_animation_estimate"]
-    cylinder_center = (
-        _mesh_center(payload["meshes"], cylinder_meshes[0]) if cylinder_meshes else [0.0, 0.0, 0.0]
-    )
+    cylinder_center = _largest_mesh_center(payload["meshes"], cylinder_meshes)
+    cylinder_axis = _cylinder_axis(payload["meshes"], cylinder_meshes)
 
     return "\n".join(
         [
@@ -372,13 +588,13 @@ def _render_spec_draft(payload: dict[str, Any]) -> str:
             f"bounds_min = {_toml_list(closed_cluster['bounds'][0])}",
             f"bounds_max = {_toml_list(closed_cluster['bounds'][1])}",
             f"body_meshes = {_toml_list(body)}",
-            f"lid_meshes = {_toml_list(roles['lid'])}",
-            f"hinge_meshes = {_toml_list(roles['hinge'])}",
+            f"lid_meshes = {_toml_list(lid_meshes)}",
+            f"hinge_meshes = {_toml_list(moving_hinges)}",
             f"handle_meshes = {_toml_list(roles['handle'])}",
             f"mechanism_meshes = {_toml_list(roles['mechanism'])}",
             "",
             "[lid]",
-            f"meshes = {_toml_list(roles['lid'])}",
+            f"meshes = {_toml_list(lid_meshes)}",
             f"pivot = {_toml_list(estimate['pivot'])}",
             f"axis = {_toml_list(estimate['axis'])}",
             f"closed_degrees = {estimate['closed_angle_degrees']}",
@@ -387,7 +603,7 @@ def _render_spec_draft(payload: dict[str, Any]) -> str:
             "[cylinder]",
             f"meshes = {_toml_list(cylinder_meshes)}",
             f"pivot = {_toml_list(cylinder_center)}",
-            f"axis = {_toml_list(payload['basis']['right'])}",
+            f"axis = {_toml_list(cylinder_axis)}",
             "degrees_per_second = 120.0",
             "",
         ]
@@ -406,6 +622,50 @@ def _mesh_center(meshes: list[dict[str, Any]], index: int) -> list[float]:
         if mesh["geometry"] == name:
             return mesh["center"]
     return [0.0, 0.0, 0.0]
+
+
+def _largest_mesh_center(meshes: list[dict[str, Any]], indices: list[int]) -> list[float]:
+    candidates = []
+    for index in indices:
+        name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
+        mesh = next((item for item in meshes if item["geometry"] == name), None)
+        if mesh is not None:
+            candidates.append(mesh)
+    if not candidates:
+        return [0.0, 0.0, 0.0]
+    mesh = max(candidates, key=lambda item: np.prod(np.array(item["extent"])))
+    return mesh["center"]
+
+
+def _horizontal_axis_from_pca(pca_axes: list[list[float]]) -> np.ndarray:
+    candidates = []
+    for raw_axis in pca_axes:
+        axis = np.array(raw_axis, dtype=float)
+        axis[1] = 0.0
+        if np.linalg.norm(axis) > 1e-6:
+            candidates.append(axis / np.linalg.norm(axis))
+    if not candidates:
+        return np.array([1.0, 0.0, 0.0])
+    axis = candidates[0]
+    if axis[0] < 0.0:
+        axis = -axis
+    return axis / np.linalg.norm(axis)
+
+
+def _cylinder_axis(meshes: list[dict[str, Any]], indices: list[int]) -> list[float]:
+    candidates = []
+    for index in indices:
+        name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
+        for mesh in meshes:
+            if mesh["geometry"] == name and "pca_axes" in mesh:
+                candidates.append(mesh)
+    if candidates:
+        mesh = max(candidates, key=lambda item: np.prod(np.array(item["extent"])))
+        axis = _horizontal_axis_from_pca(mesh["pca_axes"])
+        if axis[0] < 0.0:
+            axis = -axis
+        return _round_vec(axis / np.linalg.norm(axis))
+    return [1.0, 0.0, 0.0]
 
 
 def _toml_list(values: list[Any]) -> str:

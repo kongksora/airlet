@@ -200,6 +200,61 @@ Current caveat:
   polish should identify the hinge hardware meshes and move the pivot exactly
   onto that hinge line.
 
+### Horizontal Frame Correction Roadmap
+
+The first basis pass overused full 3D PCA. That can tilt the complete box and
+break both lid and cylinder motion. The model should stay physically horizontal:
+source world Y remains up, and the rig only applies yaw alignment around Y.
+
+Implementation checklist:
+
+- [x] Change probe basis estimation to a yaw-only horizontal frame:
+  `up = [0, 1, 0]`, with front/right derived from the closed model's horizontal
+  footprint.
+- [x] Preserve a right-handed frame convention: right maps to +X, up maps to
+  +Y, front maps to -Z.
+- [x] Compute cylinder axis from the cylinder mesh geometry/PCA, not from the
+  model basis.
+- [x] Update `spec.toml` with horizontal basis and corrected cylinder axis.
+- [x] Screenshot-validate that the box sits flat, lid opens around a plausible
+  hinge, and cylinder rotation follows the cylinder length axis.
+
+### Paired-Geometry Joint Fitting Roadmap
+
+The model contains closed and open instances of the same music box. Once the
+closed and open body meshes are paired, the open lid can be aligned into the
+closed model frame and used to solve the lid joint geometrically. The target is
+not a plausible hinge; it is a deterministic joint derived from paired geometry,
+with only floating-point error in the fitted values.
+
+Coordinate contract:
+
+- Mesh indices, raw bounds, joint pivots, and joint axes in the model-adjacent
+  `spec.toml` are recorded in GLB asset-local coordinates unless a field
+  explicitly says otherwise.
+- `[basis]` defines the asset-local to Airlet rig-space frame. The Bevy adapter
+  currently applies it at the closed-model root, so child pivots must stay in
+  asset-local coordinates.
+- `airlet-model` should expose converted rig-space poses for future procedural
+  modeling and hint-to-model paths instead of making app code infer the frame.
+
+Implementation checklist:
+
+- [x] Identify paired closed/open body meshes and compute the body alignment
+  transform.
+- [x] Align the open lid mesh into the closed model frame using the body
+  transform.
+- [x] Extract the open angle from the closed/open lid plane normals after body
+  alignment.
+- [x] Extract the revolute axis and pivot from the closed-model hinge hardware
+  centerline.
+- [x] Identify hinge hardware meshes and include the moving hinge side in the
+  lid-following transform group.
+- [x] Emit the fitted joint into `model-probe.json`, `model-probe.md`, and
+  `model-spec.toml`.
+- [x] Update `assets/models/converted/spec.toml` from the fitted values.
+- [x] Validate screenshots until the hinge error is not visually noticeable.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the

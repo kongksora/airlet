@@ -272,6 +272,10 @@ impl MovableMusicBoxModel {
         }
     }
 
+    pub fn lid_pose_rig(&self) -> PivotPose {
+        self.pose_to_rig(self.lid_pose())
+    }
+
     pub fn cylinder_pose(&self) -> PivotPose {
         let cylinder = &self.spec.cylinder;
         PivotPose {
@@ -279,6 +283,10 @@ impl MovableMusicBoxModel {
             axis: normalized(cylinder.axis),
             angle_degrees: self.state.cylinder_degrees,
         }
+    }
+
+    pub fn cylinder_pose_rig(&self) -> PivotPose {
+        self.pose_to_rig(self.cylinder_pose())
     }
 
     pub fn relative_translation(&self, translation: [f32; 3], group: MeshGroup) -> [f32; 3] {
@@ -333,6 +341,14 @@ impl MovableMusicBoxModel {
             aligned_max = aligned_max.max(point);
         }
         (aligned_min, aligned_max)
+    }
+
+    fn pose_to_rig(&self, pose: PivotPose) -> PivotPose {
+        PivotPose {
+            pivot: self.local_to_rig_point(pose.pivot),
+            axis: self.local_to_rig_axis(pose.axis),
+            angle_degrees: pose.angle_degrees,
+        }
     }
 }
 
@@ -421,5 +437,19 @@ degrees_per_second = 120.0
         let spec = ModelSpec::from_toml_str(SPEC).unwrap();
         let model = MovableMusicBoxModel::new(spec);
         assert_eq!(model.local_to_rig_axis([0.0, 0.0, -1.0]), [0.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn exposes_asset_and_rig_space_poses_separately() {
+        let spec = ModelSpec::from_toml_str(&SPEC.replace(
+            "right = [1.0, 0.0, 0.0]\nup = [0.0, 1.0, 0.0]\nfront = [0.0, 0.0, -1.0]",
+            "right = [0.0, 0.0, -1.0]\nup = [0.0, 1.0, 0.0]\nfront = [-1.0, 0.0, 0.0]",
+        ))
+        .unwrap();
+        let model = MovableMusicBoxModel::new(spec);
+
+        assert_eq!(model.lid_pose().pivot, [0.0, 0.0, -1.0]);
+        assert_eq!(model.lid_pose_rig().pivot, [1.0, 0.0, 0.0]);
+        assert_eq!(model.lid_pose_rig().axis, [0.0, 0.0, 1.0]);
     }
 }
