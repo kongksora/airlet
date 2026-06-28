@@ -9,6 +9,7 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import trimesh
+from scipy.spatial import cKDTree
 
 
 DEFAULT_MODEL = Path("assets/models/converted/music_box.glb")
@@ -327,7 +328,7 @@ def _pca_frame(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return center, axes
 
 
-def _moving_hinge_meshes(
+def _hinge_candidate_meshes(
     meshes: list[dict[str, Any]],
     labels: np.ndarray,
     closed_label: int,
@@ -355,16 +356,42 @@ def _moving_hinge_meshes(
     if not candidates:
         return []
 
-    # Upper hinge leaves should follow the lid; lower leaves remain mounted on
-    # the body. The downloaded model separates the leaves, so use vertical
-    # center and reject the thin center plates/pins from the moving group.
-    centers = np.array([center for _, center, _ in candidates])
-    upper_threshold = float(np.median(centers))
-    moving = [
-        index
-        for index, center, vertical_extent in candidates
-        if center >= upper_threshold and vertical_extent > 0.02
+    return sorted(index for index, _, _ in candidates)
+
+
+def _moving_hinge_meshes(
+    *,
+    meshes: list[dict[str, Any]],
+    labels: np.ndarray,
+    open_label: int,
+    hinge_candidates: list[int],
+    rotation: np.ndarray,
+    translation: np.ndarray,
+    pivot: np.ndarray,
+    axis: np.ndarray,
+    open_angle_degrees: float,
+) -> list[int]:
+    open_meshes = [
+        {
+            **mesh,
+            "points": _apply_rigid_transform(mesh["points"], rotation, translation),
+        }
+        for mesh, label in zip(meshes, labels)
+        if label == open_label
     ]
+    moving = []
+    lid_rotation = _rotation_matrix(axis, open_angle_degrees)
+    for index in hinge_candidates:
+        name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
+        mesh = next((item for item in meshes if item["geometry"] == name), None)
+        if mesh is None:
+            continue
+        fixed_points = mesh["points"]
+        moved_points = (fixed_points - pivot) @ lid_rotation.T + pivot
+        fixed_error = _best_chamfer(fixed_points, open_meshes)
+        moved_error = _best_chamfer(moved_points, open_meshes)
+        if moved_error < fixed_error * 0.85:
+            moving.append(index)
     return sorted(moving)
 
 
@@ -422,6 +449,44 @@ def _orient_axis(axis: np.ndarray, preferred: np.ndarray) -> np.ndarray:
     return axis
 
 
+def _rotation_matrix(axis: np.ndarray, angle_degrees: float) -> np.ndarray:
+    axis = axis / np.linalg.norm(axis)
+    angle = np.radians(angle_degrees)
+    x, y, z = axis
+    c = np.cos(angle)
+    s = np.sin(angle)
+    one_minus_c = 1.0 - c
+    return np.array(
+        [
+            [
+                c + x * x * one_minus_c,
+                x * y * one_minus_c - z * s,
+                x * z * one_minus_c + y * s,
+            ],
+            [
+                y * x * one_minus_c + z * s,
+                c + y * y * one_minus_c,
+                y * z * one_minus_c - x * s,
+            ],
+            [
+                z * x * one_minus_c - y * s,
+                z * y * one_minus_c + x * s,
+                c + z * z * one_minus_c,
+            ],
+        ]
+    )
+
+
+def _best_chamfer(points: np.ndarray, meshes: list[dict[str, Any]]) -> float:
+    return min(_chamfer(points, mesh["points"]) for mesh in meshes)
+
+
+def _chamfer(source: np.ndarray, target: np.ndarray) -> float:
+    source_distances, _ = cKDTree(target).query(source, k=1)
+    target_distances, _ = cKDTree(source).query(target, k=1)
+    return float((source_distances.mean() + target_distances.mean()) * 0.5)
+
+
 def _estimate_hinge(
     *,
     lid_probe: MeshProbe,
@@ -447,8 +512,8 @@ def _estimate_hinge(
     if np.dot(closed_normal, open_normal) < 0.0:
         open_normal = -open_normal
 
-    hinge_meshes = _moving_hinge_meshes(meshes, labels, closed_label, lid_mesh, basis)
-    hinge_axis = _hinge_axis_from_meshes(meshes, hinge_meshes)
+    hinge_candidates = _hinge_candidate_meshes(meshes, labels, closed_label, lid_mesh, basis)
+    hinge_axis = _hinge_axis_from_meshes(meshes, hinge_candidates)
     if hinge_axis is None:
         hinge_axis = np.cross(closed_normal, open_normal)
     hinge_axis = _orient_axis(hinge_axis, np.array(basis["right"], dtype=float))
@@ -460,7 +525,18 @@ def _estimate_hinge(
         )
     )
     open_angle = -abs(float(signed_angle))
-    pivot = _hinge_pivot(meshes, hinge_meshes, lid_mesh, hinge_axis, basis)
+    pivot = _hinge_pivot(meshes, hinge_candidates, lid_mesh, hinge_axis, basis)
+    hinge_meshes = _moving_hinge_meshes(
+        meshes=meshes,
+        labels=labels,
+        open_label=open_label,
+        hinge_candidates=hinge_candidates,
+        rotation=body_fit["rotation"],
+        translation=body_fit["translation"],
+        pivot=pivot,
+        axis=hinge_axis,
+        open_angle_degrees=open_angle,
+    )
     return {
         "status": "paired_geometry",
         "body_alignment": {
@@ -472,6 +548,7 @@ def _estimate_hinge(
         "closed_lid_mesh": lid_probe.geometry,
         "open_reference_lid_mesh": open_lid["geometry"],
         "moving_hinge_meshes": hinge_meshes,
+        "hinge_candidate_meshes": hinge_candidates,
         "pivot": _round_vec(pivot),
         "axis": _round_vec(hinge_axis),
         "closed_angle_degrees": 0.0,
@@ -583,8 +660,11 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
         - set(lid_meshes)
     )
     closed_cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
-    cylinder_center = _cylinder_pivot(raw_meshes, cylinder_meshes)
-    cylinder_axis = _cylinder_axis(raw_meshes, cylinder_meshes)
+    cylinder_center, cylinder_axis = _cylinder_pose(
+        raw_meshes,
+        [int(_mesh_index(mesh["geometry"])) for mesh in closed],
+        cylinder_meshes,
+    )
 
     return "\n".join(
         [
@@ -644,23 +724,60 @@ def _horizontal_axis_from_pca(pca_axes: list[list[float]]) -> np.ndarray:
     return axis / np.linalg.norm(axis)
 
 
-def _cylinder_axis(meshes: list[dict[str, Any]], indices: list[int]) -> list[float]:
-    mesh = _dominant_cylinder_mesh(meshes, indices)
-    if mesh is not None:
-        _, axes = _pca_frame(mesh["points"])
+def _cylinder_pose(
+    meshes: list[dict[str, Any]], closed_indices: list[int], cylinder_indices: list[int]
+) -> tuple[list[float], list[float]]:
+    cylinder = _dominant_cylinder_mesh(meshes, cylinder_indices)
+    if cylinder is None:
+        return [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]
+    cylinder_center, cylinder_axes = _pca_frame(cylinder["points"])
+    cylinder_axis = _horizontal_axis_from_pca([_round_vec(axis) for axis in cylinder_axes])
+    cylinder_axis = _orient_axis(cylinder_axis, np.array([1.0, 0.0, 0.0]))
+
+    axle_meshes = _coaxial_axle_meshes(meshes, closed_indices, cylinder, cylinder_axis)
+    if len(axle_meshes) >= 2:
+        centers = np.array([mesh["points"].mean(axis=0) for mesh in axle_meshes])
+        projections = centers @ cylinder_axis
+        start = centers[int(np.argmin(projections))]
+        end = centers[int(np.argmax(projections))]
+        axle_axis = end - start
+        axle_axis[1] = 0.0
+        if np.linalg.norm(axle_axis) > 1e-6:
+            axle_axis = _orient_axis(axle_axis, cylinder_axis)
+            pivot = start + axle_axis * np.dot(cylinder_center - start, axle_axis)
+            return _round_vec(pivot), _round_vec(axle_axis)
+
+    return _round_vec(cylinder_center), _round_vec(cylinder_axis)
+
+
+def _coaxial_axle_meshes(
+    meshes: list[dict[str, Any]],
+    closed_indices: list[int],
+    cylinder: dict[str, Any],
+    cylinder_axis: np.ndarray,
+) -> list[dict[str, Any]]:
+    cylinder_center = cylinder["points"].mean(axis=0)
+    candidates = []
+    for index in closed_indices:
+        mesh = _mesh_by_index(meshes, index)
+        if mesh is None or mesh["geometry"] == cylinder["geometry"]:
+            continue
+        center, axes = _pca_frame(mesh["points"])
         axis = _horizontal_axis_from_pca([_round_vec(axis) for axis in axes])
-        if axis[0] < 0.0:
-            axis = -axis
-        return _round_vec(axis / np.linalg.norm(axis))
-    return [1.0, 0.0, 0.0]
+        alignment = abs(float(np.dot(axis, cylinder_axis)))
+        if alignment < 0.98:
+            continue
+        offset = center - cylinder_center
+        radial = offset - cylinder_axis * np.dot(offset, cylinder_axis)
+        if np.linalg.norm(radial) > 0.018:
+            continue
+        candidates.append(mesh)
+    return candidates
 
 
-def _cylinder_pivot(meshes: list[dict[str, Any]], indices: list[int]) -> list[float]:
-    mesh = _dominant_cylinder_mesh(meshes, indices)
-    if mesh is None:
-        return [0.0, 0.0, 0.0]
-    center, _ = _pca_frame(mesh["points"])
-    return _round_vec(center)
+def _mesh_by_index(meshes: list[dict[str, Any]], index: int) -> dict[str, Any] | None:
+    name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
+    return next((item for item in meshes if item["geometry"] == name), None)
 
 
 def _dominant_cylinder_mesh(

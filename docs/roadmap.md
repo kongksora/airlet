@@ -272,6 +272,24 @@ Implementation checklist:
 - [x] Regenerate and apply `assets/models/converted/spec.toml`.
 - [x] Screenshot-validate lid opening and cylinder rotation again.
 
+### Hinge Pairing And Axle-Hole Axis Refinement
+
+The upper/lower hinge split still has at least one misclassified small part, and
+the cylinder still has a slight eccentric wobble. The next correction should use
+paired open/closed geometry for hinge membership and the axle/hole geometry for
+the cylinder axis.
+
+Implementation checklist:
+
+- [x] Classify each hinge submesh by comparing fixed-body alignment error
+  against lid-motion alignment error.
+- [x] Keep only submeshes with lower lid-motion error in the lid-following
+  group.
+- [x] Detect the cylinder axle/hole support meshes and derive the cylinder
+  centerline from those coaxial small cylinders.
+- [x] Regenerate and apply `assets/models/converted/spec.toml`.
+- [x] Screenshot-validate open-lid hinges and cylinder 90/180 degree poses.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the
