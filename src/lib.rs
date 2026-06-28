@@ -52,6 +52,9 @@ const COMB_MIN_PLUCK_TICKS: i64 = PPQ / 16;
 const COMB_MAX_PLUCK_TICKS: i64 = PPQ / 3;
 const COMB_MIN_VIBRATION_TICKS: i64 = PPQ / 2;
 const COMB_MAX_VIBRATION_TICKS: i64 = PPQ * 3;
+const COMB_DEFLECTION_SCALE: f32 = 0.65;
+const COMB_MIN_DEFLECTION_RAD: f32 = 0.035;
+const COMB_MAX_DEFLECTION_RAD: f32 = 0.18;
 const COMB_GHOST_SAMPLES: [f32; 4] = [-0.38, -0.18, 0.18, 0.38];
 const DEFAULT_DEBUG_BIND: &str = "127.0.0.1:4777";
 
@@ -1521,7 +1524,9 @@ fn derive_comb_animation_event(tooth: &ToothHint, ticks_per_turn: i64) -> CombAn
     let pluck_ticks = pluck_ticks.clamp(COMB_MIN_PLUCK_TICKS, COMB_MAX_PLUCK_TICKS);
     let velocity = tooth.velocity_hint.clamp(0.0, 1.0);
     let protrusion_ratio = (tooth.protrusion / tooth.radius.max(0.01)).clamp(0.0, 0.25);
-    let max_deflection_rad = (0.055 + velocity * 0.14 + protrusion_ratio * 0.36).clamp(0.055, 0.26);
+    let raw_deflection = 0.055 + velocity * 0.14 + protrusion_ratio * 0.36;
+    let max_deflection_rad = (raw_deflection * COMB_DEFLECTION_SCALE)
+        .clamp(COMB_MIN_DEFLECTION_RAD, COMB_MAX_DEFLECTION_RAD);
     let vibration_ticks =
         ((0.55 + velocity * 1.35 + protrusion_ratio * 2.0) * PPQ as f32).round() as i64;
     let vibration_ticks = vibration_ticks.clamp(COMB_MIN_VIBRATION_TICKS, COMB_MAX_VIBRATION_TICKS);
@@ -1660,6 +1665,9 @@ fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) ->
             "max_pluck_ticks": COMB_MAX_PLUCK_TICKS,
             "min_vibration_ticks": COMB_MIN_VIBRATION_TICKS,
             "max_vibration_ticks": COMB_MAX_VIBRATION_TICKS,
+            "deflection_scale": COMB_DEFLECTION_SCALE,
+            "min_deflection_rad": COMB_MIN_DEFLECTION_RAD,
+            "max_deflection_rad": COMB_MAX_DEFLECTION_RAD,
             "ghost_samples": COMB_GHOST_SAMPLES.len(),
             "ghost_phase_offsets": COMB_GHOST_SAMPLES,
             "release_alignment_preview": release_alignment_preview(mechanism),
