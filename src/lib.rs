@@ -19,9 +19,12 @@ use airlet::{
 };
 use airlet_model::{MeshGroup, ModelSpec, MovableMusicBoxModel, PivotPose};
 use bevy::{
+    asset::RenderAssetUsages,
     gltf::{Gltf, GltfMaterial, GltfMesh, GltfNode},
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
+    mesh::Indices,
     prelude::*,
+    render::render_resource::PrimitiveTopology,
     render::view::screenshot::{Screenshot, save_to_disk},
     window::WindowResolution,
 };
@@ -34,9 +37,9 @@ const DEFAULT_MODEL_SPEC: &str = "assets/models/converted/spec.toml";
 const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.60, 0.0);
 const PLATFORM_TOP_Y: f32 = 0.0;
 const MODEL_SCALE: f32 = 1.8;
-const TOOTH_RADIAL_PROTRUSION_RATIO: f32 = 0.22;
-const TOOTH_WIDTH_RATIO: f32 = 0.055;
-const TOOTH_HEIGHT_RATIO: f32 = 0.26;
+const TOOTH_RADIAL_PROTRUSION_RATIO: f32 = 0.16;
+const TOOTH_WIDTH_RATIO: f32 = 0.028;
+const TOOTH_HEIGHT_RATIO: f32 = 0.14;
 const COMB_TINE_LENGTH_RATIO: f32 = 1.35;
 const COMB_TINE_WIDTH_RATIO: f32 = 0.035;
 const COMB_TINE_THICKNESS_RATIO: f32 = 0.025;
@@ -114,9 +117,9 @@ impl Default for ExhibitControls {
             light_yaw: -0.45,
             light_pitch: 1.0,
             light_distance: 5.2,
-            spot_inner_angle: 0.34,
-            spot_outer_angle: 0.78,
-            spot_intensity: 1_450_000.0,
+            spot_inner_angle: 0.20,
+            spot_outer_angle: 0.42,
+            spot_intensity: 1_700_000.0,
             volume: 0.75,
             playback: PlaybackCommand::Idle,
             lid_t: env_f32("AIRLET_LID_T", 0.0).clamp(0.0, 1.0),
@@ -442,18 +445,6 @@ fn setup_scene(
             ..default()
         })),
         Transform::from_xyz(0.0, -0.12, 0.0),
-    ));
-
-    commands.spawn((
-        Name::new("Stage Floor"),
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(14.0, 14.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.055, 0.052, 0.048),
-            perceptual_roughness: 0.95,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_xyz(0.0, -0.245, 0.0),
     ));
 
     commands.spawn((
@@ -976,6 +967,8 @@ fn spawn_hint_mechanism(
     let tooth_protrusion = cylinder_radius * TOOTH_RADIAL_PROTRUSION_RATIO;
     let tooth_width = cylinder_length * TOOTH_WIDTH_RATIO;
     let tooth_height = cylinder_radius * TOOTH_HEIGHT_RATIO;
+    let tooth_radius = tooth_width.min(tooth_protrusion) * 0.5;
+    let tooth_shank_height = tooth_height.max(tooth_radius);
     let comb_tine_length = cylinder_radius * COMB_TINE_LENGTH_RATIO;
     let comb_tine_width = cylinder_length * COMB_TINE_WIDTH_RATIO;
     let comb_tine_thickness = cylinder_radius * COMB_TINE_THICKNESS_RATIO;
@@ -1020,29 +1013,59 @@ fn spawn_hint_mechanism(
     commands.entity(cylinder_pivot).add_child(cylinder);
 
     for tooth in &hint.events {
-        let transform = tooth_transform(
+        let shank_transform = tooth_transform(
             tooth,
             axis,
             radial_zero,
             tangent_zero,
             cylinder_radius,
             &calibration,
-            tooth_height,
+            tooth_shank_height * 0.5,
         );
-        let entity = commands
+        let shank = commands
             .spawn((
                 Name::new(format!(
-                    "Hint Tooth midi {} tick {}",
+                    "Hint Tooth Shank midi {} tick {}",
                     tooth.midi_note, tooth.onset_tick
                 )),
                 ProceduralMechanism,
-                Mesh3d(meshes.add(Cuboid::new(tooth_width, tooth_height, tooth_protrusion))),
+                Mesh3d(
+                    meshes.add(
+                        Cylinder::new(tooth_radius, tooth_shank_height)
+                            .mesh()
+                            .resolution(16),
+                    ),
+                ),
                 MeshMaterial3d(tooth_material.clone()),
-                transform,
+                shank_transform,
                 Visibility::Visible,
             ))
             .id();
-        commands.entity(cylinder_pivot).add_child(entity);
+        commands.entity(cylinder_pivot).add_child(shank);
+
+        let cap_transform = tooth_transform(
+            tooth,
+            axis,
+            radial_zero,
+            tangent_zero,
+            cylinder_radius,
+            &calibration,
+            tooth_shank_height,
+        );
+        let cap = commands
+            .spawn((
+                Name::new(format!(
+                    "Hint Tooth Hemispherical Cap midi {} tick {}",
+                    tooth.midi_note, tooth.onset_tick
+                )),
+                ProceduralMechanism,
+                Mesh3d(meshes.add(hemisphere_mesh(tooth_radius, 16, 6))),
+                MeshMaterial3d(tooth_material.clone()),
+                cap_transform,
+                Visibility::Visible,
+            ))
+            .id();
+        commands.entity(cylinder_pivot).add_child(cap);
     }
 
     let mut notes = hint
@@ -1357,13 +1380,13 @@ fn tooth_transform(
     tangent_zero: Vec3,
     cylinder_radius: f32,
     calibration: &MechanismCalibration,
-    tooth_height: f32,
+    radial_offset: f32,
 ) -> Transform {
     let angle = tooth.angle_rad;
     let radial = radial_zero * angle.cos() + tangent_zero * angle.sin();
     let tangent = (-radial_zero * angle.sin() + tangent_zero * angle.cos()).normalize_or_zero();
     let axial = note_axial_position(tooth.midi_note, calibration);
-    let position = axis * axial + radial * (cylinder_radius + tooth_height * 0.48);
+    let position = axis * axial + radial * (cylinder_radius + radial_offset);
     Transform::from_translation(position).with_rotation(basis_rotation(axis, radial, tangent))
 }
 
@@ -1410,6 +1433,65 @@ fn note_axial_position(midi_note: i32, calibration: &MechanismCalibration) -> f3
         let track = track_index(midi_note, calibration).min(calibration.track_count - 1);
         -calibration.usable_length * 0.5 + track as f32 * calibration.track_spacing
     }
+}
+
+fn hemisphere_mesh(radius: f32, sectors: u32, stacks: u32) -> Mesh {
+    let sectors = sectors.max(3);
+    let stacks = stacks.max(2);
+    let mut positions = Vec::<[f32; 3]>::new();
+    let mut normals = Vec::<[f32; 3]>::new();
+    let mut uvs = Vec::<[f32; 2]>::new();
+    let mut indices = Vec::<u32>::new();
+
+    positions.push([0.0, radius, 0.0]);
+    normals.push([0.0, 1.0, 0.0]);
+    uvs.push([0.5, 1.0]);
+
+    for stack in 1..=stacks {
+        let phi = FRAC_PI_2 * stack as f32 / stacks as f32;
+        let ring_radius = radius * phi.sin();
+        let y = radius * phi.cos();
+        for sector in 0..sectors {
+            let theta = 2.0 * PI * sector as f32 / sectors as f32;
+            let x = ring_radius * theta.cos();
+            let z = ring_radius * theta.sin();
+            let normal = Vec3::new(x, y, z).normalize_or_zero();
+            positions.push([x, y, z]);
+            normals.push(normal.to_array());
+            uvs.push([
+                sector as f32 / sectors as f32,
+                1.0 - stack as f32 / stacks as f32,
+            ]);
+        }
+    }
+
+    for sector in 0..sectors {
+        let current = 1 + sector;
+        let next = 1 + (sector + 1) % sectors;
+        indices.extend_from_slice(&[0, next, current]);
+    }
+
+    for stack in 1..stacks {
+        let prev = 1 + (stack - 1) * sectors;
+        let curr = 1 + stack * sectors;
+        for sector in 0..sectors {
+            let prev_a = prev + sector;
+            let prev_b = prev + (sector + 1) % sectors;
+            let curr_a = curr + sector;
+            let curr_b = curr + (sector + 1) % sectors;
+            indices.extend_from_slice(&[prev_a, prev_b, curr_b]);
+            indices.extend_from_slice(&[prev_a, curr_b, curr_a]);
+        }
+    }
+
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(indices))
 }
 
 fn timing_validation(hint: &MechanismLayoutHint, ticks_per_turn: i64) -> TimingValidation {
