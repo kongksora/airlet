@@ -2,15 +2,21 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use airlet::{audio::RenderedAudio, defaults};
 use bevy::{
+    gltf::GltfAssetLabel,
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     prelude::*,
+    render::view::screenshot::{Capturing, Screenshot, save_to_disk},
     window::WindowResolution,
 };
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, buffer::SamplesBuffer};
 
 const MUSIC_BOX_SCENE: &str = "models/converted/music_box.glb";
-const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.9, 0.0);
+const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.74, 0.0);
+const MODEL_BOUNDS_MIN: Vec3 = Vec3::new(-1.1669031, -1.1295918, -1.6294072);
+const MODEL_BOUNDS_MAX: Vec3 = Vec3::new(0.8330967, -0.5398053, -0.7856010);
+const PLATFORM_TOP_Y: f32 = 0.14;
+const MODEL_SCALE: f32 = 1.8;
 
 pub fn run() {
     App::new()
@@ -24,13 +30,14 @@ pub fn run() {
             ..default()
         }))
         .add_plugins(EguiPlugin::default())
-        .insert_resource(ClearColor(Color::srgb(0.035, 0.035, 0.04)))
+        .insert_resource(ClearColor(Color::srgb(0.12, 0.115, 0.105)))
         .insert_resource(GlobalAmbientLight {
-            color: Color::srgb(0.72, 0.68, 0.62),
-            brightness: 90.0,
+            color: Color::srgb(1.0, 0.92, 0.78),
+            brightness: 650.0,
             ..default()
         })
         .init_resource::<ExhibitControls>()
+        .init_resource::<ScreenshotState>()
         .init_resource::<PlaybackState>()
         .add_systems(Startup, (setup_scene, setup_audio))
         .add_systems(
@@ -40,6 +47,9 @@ pub fn run() {
                 apply_camera_transform,
                 apply_spotlight_controls,
                 apply_playback_controls,
+                report_model_load,
+                auto_screenshot,
+                exit_after_screenshot,
             ),
         )
         .add_systems(EguiPrimaryContextPass, control_panel)
@@ -64,15 +74,15 @@ pub struct ExhibitControls {
 impl Default for ExhibitControls {
     fn default() -> Self {
         Self {
-            yaw: -0.62,
-            pitch: 0.34,
-            radius: 7.0,
+            yaw: 0.48,
+            pitch: 0.36,
+            radius: 4.2,
             light_yaw: -0.45,
-            light_pitch: 1.05,
+            light_pitch: 1.0,
             light_distance: 5.2,
-            spot_inner_angle: 0.38,
-            spot_outer_angle: 0.72,
-            spot_intensity: 85_000.0,
+            spot_inner_angle: 0.55,
+            spot_outer_angle: 1.1,
+            spot_intensity: 650_000.0,
             volume: 0.75,
             playback: PlaybackCommand::Idle,
         }
@@ -95,11 +105,34 @@ pub struct PlaybackState {
     pub last_error: Option<String>,
 }
 
+#[derive(Resource)]
+pub struct ScreenshotState {
+    pub path: Option<String>,
+    pub requested: bool,
+    pub frames_before_capture: u32,
+}
+
+impl Default for ScreenshotState {
+    fn default() -> Self {
+        Self {
+            path: std::env::var("AIRLET_SCREENSHOT").ok(),
+            requested: false,
+            frames_before_capture: 180,
+        }
+    }
+}
+
 #[derive(Component)]
 struct ExhibitCamera;
 
 #[derive(Component)]
 struct ExhibitSpotlight;
+
+#[derive(Resource, Default)]
+struct ModelSpawnState {
+    spawned: bool,
+    logged: bool,
+}
 
 fn setup_audio(mut playback: ResMut<PlaybackState>) {
     match DeviceSinkBuilder::open_default_sink() {
@@ -122,19 +155,22 @@ fn setup_scene(
     mut materials: ResMut<Assets<StandardMaterial>>,
     controls: Res<ExhibitControls>,
 ) {
+    commands.init_resource::<ModelSpawnState>();
+
     commands.spawn((
         Name::new("Music Box Model"),
         WorldAssetRoot(asset_server.load(GltfAssetLabel::Scene(0).from_asset(MUSIC_BOX_SCENE))),
-        Transform::from_scale(Vec3::splat(1.0)),
+        model_transform(),
     ));
 
     commands.spawn((
         Name::new("Exhibit Platform"),
-        Mesh3d(meshes.add(Cylinder::new(3.6, 0.28))),
+        Mesh3d(meshes.add(Cylinder::new(2.15, 0.28))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.45, 0.42, 0.36),
+            base_color: Color::srgb(0.86, 0.73, 0.55),
             perceptual_roughness: 0.82,
             metallic: 0.05,
+            unlit: true,
             ..default()
         })),
         Transform::from_xyz(0.0, -0.16, 0.0),
@@ -144,22 +180,45 @@ fn setup_scene(
         Name::new("Stage Floor"),
         Mesh3d(meshes.add(Plane3d::default().mesh().size(14.0, 14.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.11, 0.105, 0.095),
+            base_color: Color::srgb(0.50, 0.45, 0.36),
             perceptual_roughness: 0.95,
             cull_mode: None,
+            unlit: true,
             ..default()
         })),
     ));
 
     commands.spawn((
+        Name::new("Key Directional Light"),
+        DirectionalLight {
+            illuminance: 18_000.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 4.0, 0.0).looking_at(EXHIBIT_TARGET, Vec3::Y),
+    ));
+
+    commands.spawn((
         Name::new("Fill Light"),
         PointLight {
-            intensity: 2_200.0,
-            range: 9.0,
+            intensity: 22_000.0,
+            range: 16.0,
             shadow_maps_enabled: false,
             ..default()
         },
-        Transform::from_xyz(-3.6, 3.2, 3.8),
+        Transform::from_xyz(-4.2, 4.4, 4.6),
+    ));
+
+    commands.spawn((
+        Name::new("Rim Light"),
+        PointLight {
+            intensity: 14_000.0,
+            range: 12.0,
+            color: Color::srgb(0.78, 0.88, 1.0),
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(3.2, 3.0, -4.2),
     ));
 
     commands.spawn((
@@ -296,7 +355,7 @@ fn control_panel(
                 egui::Slider::new(&mut controls.spot_inner_angle, 0.08..=1.0).text("Inner angle"),
             );
             ui.add(
-                egui::Slider::new(&mut controls.spot_intensity, 5_000.0..=180_000.0)
+                egui::Slider::new(&mut controls.spot_intensity, 5_000.0..=1_200_000.0)
                     .text("Intensity"),
             );
             ui.add(egui::Slider::new(&mut controls.light_yaw, -PI..=PI).text("Light yaw"));
@@ -309,6 +368,52 @@ fn control_panel(
             ui.add(egui::Slider::new(&mut controls.radius, 3.4..=12.0).text("Distance"));
         });
     Ok(())
+}
+
+fn report_model_load(mut state: ResMut<ModelSpawnState>, meshes: Query<&Mesh3d>) {
+    if state.logged {
+        return;
+    }
+    let mesh_count = meshes.iter().count();
+    if mesh_count <= 2 {
+        return;
+    }
+    info!("music box scene spawned; mesh component count: {mesh_count}");
+    state.spawned = true;
+    state.logged = true;
+}
+
+fn auto_screenshot(
+    mut commands: Commands,
+    mut state: ResMut<ScreenshotState>,
+    model_state: Res<ModelSpawnState>,
+) {
+    if state.path.is_none() || state.requested {
+        return;
+    }
+    if !model_state.spawned {
+        return;
+    }
+    if state.frames_before_capture > 0 {
+        state.frames_before_capture -= 1;
+        return;
+    }
+
+    let path = state.path.clone().unwrap();
+    commands
+        .spawn(Screenshot::primary_window())
+        .observe(save_to_disk(path));
+    state.requested = true;
+}
+
+fn exit_after_screenshot(
+    state: Res<ScreenshotState>,
+    captures: Query<Entity, With<Capturing>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if state.requested && captures.is_empty() {
+        exit.write(AppExit::Success);
+    }
 }
 
 fn start_playback(playback: &mut PlaybackState, volume: f32) {
@@ -354,6 +459,17 @@ fn camera_transform(controls: &ExhibitControls) -> Transform {
         horizontal * controls.yaw.cos(),
     ) + EXHIBIT_TARGET;
     Transform::from_translation(position).looking_at(EXHIBIT_TARGET, Vec3::Y)
+}
+
+fn model_transform() -> Transform {
+    let model_center = (MODEL_BOUNDS_MIN + MODEL_BOUNDS_MAX) * 0.5;
+    let model_bottom_y = MODEL_BOUNDS_MIN.y;
+    let translation = Vec3::new(
+        EXHIBIT_TARGET.x - model_center.x * MODEL_SCALE,
+        PLATFORM_TOP_Y - model_bottom_y * MODEL_SCALE,
+        EXHIBIT_TARGET.z - model_center.z * MODEL_SCALE,
+    );
+    Transform::from_translation(translation).with_scale(Vec3::splat(MODEL_SCALE))
 }
 
 fn spotlight_transform(controls: &ExhibitControls) -> Transform {

@@ -64,6 +64,29 @@ core crate remains responsible for score, audio, presets, and mechanism data.
 - Later animation work should consume `airlet::mechanism` hints instead of
   hardcoding tooth/cylinder timing in Bevy.
 
+### Screenshot-Driven Visual Debugging
+
+The first Bevy demo appeared dark because the imported GLB scene was not being
+instantiated through Bevy 0.19's `WorldAssetRoot(Scene0)` path, and the recorded
+GLB bounds had the vertical/depth axes swapped. The GLB measured bounds are:
+
+- min: `[-1.17, -1.13, -1.63]`
+- max: `[0.83, -0.54, -0.79]`
+- center: `[-0.17, -0.83, -1.21]`
+
+Fix and validation checklist:
+
+- [x] Recenter the model so the measured model center lands on the exhibit
+  target.
+- [x] Lower the model so the measured bottom rests on the platform top.
+- [x] Increase ambient/fill/spot lighting enough for immediate visibility.
+- [x] Add an environment-variable screenshot mode that saves a primary-window
+  PNG and exits automatically.
+- [x] Use `identify`/`magick` statistics on the screenshot to catch black or
+  near-black frames.
+- [x] Iterate camera, model placement, and lighting until the screenshot is
+  visibly non-dark.
+
 ## Roadmap Status
 
 - [x] Timeline-driven audio engine
