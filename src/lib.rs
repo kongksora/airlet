@@ -38,6 +38,8 @@ use serde_json::{Value, json};
 const DEFAULT_MODEL_SPEC: &str = "assets/models/converted/spec.toml";
 const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.60, 0.0);
 const PLATFORM_TOP_Y: f32 = 0.0;
+const CAMERA_MIN_RADIUS: f32 = 0.85;
+const CAMERA_MAX_RADIUS: f32 = 12.0;
 const MODEL_SCALE: f32 = 1.8;
 const TOOTH_WIDTH_RATIO: f32 = 0.028;
 const TOOTH_HEIGHT_RATIO: f32 = 0.14;
@@ -566,7 +568,8 @@ fn orbit_camera(
     }
 
     if mouse_scroll.delta.y != 0.0 {
-        controls.radius = (controls.radius - mouse_scroll.delta.y * 0.35).clamp(3.4, 12.0);
+        controls.radius = (controls.radius - mouse_scroll.delta.y * 0.35)
+            .clamp(CAMERA_MIN_RADIUS, CAMERA_MAX_RADIUS);
     }
 }
 
@@ -679,7 +682,7 @@ fn handle_debug_action(
                 controls.pitch = pitch.clamp(0.08, 1.25);
             }
             if let Some(radius) = radius {
-                controls.radius = radius.clamp(3.4, 12.0);
+                controls.radius = radius.clamp(CAMERA_MIN_RADIUS, CAMERA_MAX_RADIUS);
             }
             DebugResponse::ok(debug_state_json(
                 controls, playback, mechanism, model, debug_bind,
@@ -806,7 +809,10 @@ fn control_panel(
             ui.heading("Camera");
             ui.add(egui::Slider::new(&mut controls.yaw, -PI..=PI).text("Yaw"));
             ui.add(egui::Slider::new(&mut controls.pitch, 0.08..=1.25).text("Pitch"));
-            ui.add(egui::Slider::new(&mut controls.radius, 3.4..=12.0).text("Distance"));
+            ui.add(
+                egui::Slider::new(&mut controls.radius, CAMERA_MIN_RADIUS..=CAMERA_MAX_RADIUS)
+                    .text("Distance"),
+            );
 
             ui.separator();
             ui.heading("Rig");
