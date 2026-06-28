@@ -112,6 +112,8 @@ pub struct ExhibitControls {
     pub yaw: f32,
     pub pitch: f32,
     pub radius: f32,
+    pub camera_target: Vec3,
+    pub show_ui: bool,
     pub light_yaw: f32,
     pub light_pitch: f32,
     pub light_distance: f32,
@@ -131,6 +133,8 @@ impl Default for ExhibitControls {
             yaw: 0.48,
             pitch: 0.36,
             radius: 4.2,
+            camera_target: EXHIBIT_TARGET,
+            show_ui: true,
             light_yaw: -0.45,
             light_pitch: 1.0,
             light_distance: 5.2,
@@ -177,6 +181,9 @@ struct CombAnimationEvent {
     onset_tick: i64,
     pluck_start_tick: i64,
     release_tick: i64,
+    contact_supported: bool,
+    contact_window_ticks: i64,
+    required_pluck_ticks: i64,
     max_deflection_rad: f32,
     vibration_ticks: i64,
     vibration_hz: f32,
@@ -241,6 +248,10 @@ enum DebugAction {
         yaw: Option<f32>,
         pitch: Option<f32>,
         radius: Option<f32>,
+        target: Option<[f32; 3]>,
+    },
+    SetUi {
+        visible: bool,
     },
     SetLight {
         yaw: Option<f32>,
@@ -423,10 +434,40 @@ struct CylinderPivot;
 struct ProceduralMechanism;
 
 #[derive(Component)]
-struct CombTineVisual {
+struct CombTineModel {
     midi_note: i32,
-    rest_rotation: Quat,
+    mesh: Handle<Mesh>,
+    length: f32,
+    width: f32,
+    thickness: f32,
+    segment_count: usize,
     smear_sample: Option<f32>,
+}
+
+impl CombTineModel {
+    fn rest_mesh(length: f32, width: f32, thickness: f32, segment_count: usize) -> Mesh {
+        Self::deformed_mesh(length, width, thickness, segment_count, 0.0)
+    }
+
+    fn deformed_mesh(
+        length: f32,
+        width: f32,
+        thickness: f32,
+        segment_count: usize,
+        deflection: f32,
+    ) -> Mesh {
+        comb_tine_mesh(length, width, thickness, segment_count, deflection)
+    }
+
+    fn mesh_for_deflection(&self, deflection: f32) -> Mesh {
+        Self::deformed_mesh(
+            self.length,
+            self.width,
+            self.thickness,
+            self.segment_count,
+            deflection,
+        )
+    }
 }
 
 #[derive(Resource)]
@@ -674,7 +715,12 @@ fn handle_debug_action(
             controls, playback, mechanism, model, debug_bind,
         )),
         DebugAction::DumpMechanism => DebugResponse::ok(debug_mechanism_json(mechanism, model)),
-        DebugAction::SetCamera { yaw, pitch, radius } => {
+        DebugAction::SetCamera {
+            yaw,
+            pitch,
+            radius,
+            target,
+        } => {
             if let Some(yaw) = yaw {
                 controls.yaw = yaw;
             }
@@ -684,6 +730,15 @@ fn handle_debug_action(
             if let Some(radius) = radius {
                 controls.radius = radius.clamp(CAMERA_MIN_RADIUS, CAMERA_MAX_RADIUS);
             }
+            if let Some(target) = target {
+                controls.camera_target = vec3(target);
+            }
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::SetUi { visible } => {
+            controls.show_ui = visible;
             DebugResponse::ok(debug_state_json(
                 controls, playback, mechanism, model, debug_bind,
             ))
@@ -765,6 +820,9 @@ fn control_panel(
     mut controls: ResMut<ExhibitControls>,
     playback: Res<PlaybackState>,
 ) -> Result {
+    if !controls.show_ui {
+        return Ok(());
+    }
     egui::Window::new("Airlet Control")
         .default_width(280.0)
         .show(contexts.ctx_mut()?, |ui| {
@@ -997,11 +1055,12 @@ fn apply_rig_controls(
 fn animate_comb_tines(
     playback: Res<PlaybackState>,
     mechanism: Res<MechanismResource>,
-    mut query: Query<(&CombTineVisual, &mut Transform, &mut Visibility)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut query: Query<(&CombTineModel, &mut Visibility)>,
 ) {
     let current_tick = (playback.is_playing || playback.elapsed_seconds > f32::EPSILON)
         .then(|| seconds_to_tick(playback.elapsed_seconds, &mechanism));
-    for (tine, mut transform, mut visibility) in &mut query {
+    for (tine, mut visibility) in &mut query {
         let sample = current_tick
             .and_then(|tick| comb_tine_sample(tine.midi_note, tick, tine.smear_sample, &mechanism));
         let deflection = sample.map(|sample| sample.deflection_rad).unwrap_or(0.0);
@@ -1013,7 +1072,9 @@ fn animate_comb_tines(
         } else {
             Visibility::Hidden
         };
-        transform.rotation = tine.rest_rotation * Quat::from_rotation_x(deflection);
+        if let Some(mut mesh) = meshes.get_mut(&tine.mesh) {
+            *mesh = tine.mesh_for_deflection(deflection);
+        }
     }
 }
 
@@ -1067,6 +1128,7 @@ fn spawn_hint_mechanism(
         cylinder_length * COMB_TINE_WIDTH_RATIO
     };
     let comb_tine_thickness = cylinder_radius * COMB_TINE_THICKNESS_RATIO;
+    let comb_segment_count = 5usize;
     let comb_fixed_width = calibration.usable_length
         + if calibration.track_count > 1 {
             calibration.track_spacing
@@ -1215,6 +1277,7 @@ fn spawn_hint_mechanism(
             comb_free_length,
             comb_tine_width,
             comb_tine_thickness,
+            comb_segment_count,
             &calibration,
         );
         for smear_sample in COMB_GHOST_SAMPLES {
@@ -1233,6 +1296,7 @@ fn spawn_hint_mechanism(
                 comb_free_length,
                 comb_tine_width,
                 comb_tine_thickness,
+                comb_segment_count,
                 &calibration,
             );
         }
@@ -1255,10 +1319,12 @@ fn spawn_comb_tine_visual(
     comb_free_length: f32,
     comb_tine_width: f32,
     comb_tine_thickness: f32,
+    segment_count: usize,
     calibration: &MechanismCalibration,
 ) {
     let axial = note_axial_position(midi_note, calibration);
-    let pivot_position = axis * axial + radial_zero * (tip_radius + comb_free_length);
+    let pivot_translation =
+        vec3(cylinder_pivot) + axis * axial + radial_zero * (tip_radius + comb_free_length);
     let rotation = basis_rotation(axis, radial_zero, tangent_zero);
     let suffix = smear_sample
         .map(|sample| format!(" ghost {sample:.2}"))
@@ -1268,36 +1334,32 @@ fn spawn_comb_tine_visual(
     } else {
         Visibility::Visible
     };
-    let pivot = commands
-        .spawn((
-            Name::new(format!("Comb Tine Pivot midi {midi_note}{suffix}")),
-            CombTineVisual {
-                midi_note,
-                rest_rotation: rotation,
-                smear_sample,
-            },
-            ProceduralMechanism,
-            Transform::from_translation(vec3(cylinder_pivot) + pivot_position)
-                .with_rotation(rotation),
-            visibility,
-        ))
-        .id();
+    let mesh = meshes.add(CombTineModel::rest_mesh(
+        comb_free_length,
+        comb_tine_width,
+        comb_tine_thickness,
+        segment_count,
+    ));
     let tine = commands
         .spawn((
             Name::new(format!("Comb Free Tine midi {midi_note}{suffix}")),
+            CombTineModel {
+                midi_note,
+                mesh: mesh.clone(),
+                length: comb_free_length,
+                width: comb_tine_width,
+                thickness: comb_tine_thickness,
+                segment_count,
+                smear_sample,
+            },
             ProceduralMechanism,
-            Mesh3d(meshes.add(Cuboid::new(
-                comb_tine_width,
-                comb_free_length,
-                comb_tine_thickness,
-            ))),
+            Mesh3d(mesh),
             MeshMaterial3d(material.clone()),
-            Transform::from_xyz(0.0, -comb_free_length * 0.5, 0.0),
+            Transform::from_translation(pivot_translation).with_rotation(rotation),
             visibility,
         ))
         .id();
-    commands.entity(pivot).add_child(tine);
-    commands.entity(root).add_child(pivot);
+    commands.entity(root).add_child(tine);
 }
 
 fn auto_screenshot(
@@ -1375,8 +1437,8 @@ fn camera_transform(controls: &ExhibitControls) -> Transform {
         horizontal * controls.yaw.sin(),
         controls.radius * controls.pitch.sin(),
         horizontal * controls.yaw.cos(),
-    ) + EXHIBIT_TARGET;
-    Transform::from_translation(position).looking_at(EXHIBIT_TARGET, Vec3::Y)
+    ) + controls.camera_target;
+    Transform::from_translation(position).looking_at(controls.camera_target, Vec3::Y)
 }
 
 fn model_transform(model: &MovableMusicBoxModel) -> Transform {
@@ -1430,6 +1492,9 @@ fn comb_tine_sample(
     mechanism: &MechanismResource,
 ) -> Option<CombTineSample> {
     let event = nearest_comb_animation_event(midi_note, current_tick, mechanism)?;
+    if !event.contact_supported {
+        return None;
+    }
     let deflection_rad = comb_tine_deflection_for_event(event, current_tick, smear_sample);
     let visible = smear_sample.is_none()
         || (current_tick >= event.release_tick
@@ -1477,6 +1542,7 @@ fn nearest_comb_animation_event<'a>(
         .comb_animation_events
         .iter()
         .filter(|event| event.midi_note == midi_note)
+        .filter(|event| event.contact_supported)
         .filter(|event| {
             current_tick >= event.pluck_start_tick
                 && current_tick <= event.release_tick + event.vibration_ticks
@@ -1497,6 +1563,9 @@ fn release_alignment_preview(mechanism: &MechanismResource) -> Vec<Value> {
                 "pluck_window_ticks": event.release_tick - event.pluck_start_tick,
                 "release_tick": event.release_tick,
                 "release_equals_audio_onset": true,
+                "contact_supported": event.contact_supported,
+                "contact_window_ticks": event.contact_window_ticks,
+                "required_pluck_ticks": event.required_pluck_ticks,
                 "max_deflection_rad": event.max_deflection_rad,
                 "vibration_ticks": event.vibration_ticks,
                 "vibration_hz": event.vibration_hz,
@@ -1526,16 +1595,30 @@ fn derive_comb_animation_events(
 fn derive_comb_animation_event(tooth: &ToothHint, ticks_per_turn: i64) -> CombAnimationEvent {
     let circumference = (2.0 * PI * tooth.radius.max(0.01)).max(0.01);
     let footprint_turn_ratio = (tooth.length_along_rotation.max(0.01) / circumference).max(0.0);
-    let pluck_ticks = (footprint_turn_ratio * ticks_per_turn as f32 * 1.75).round() as i64;
-    let pluck_ticks = pluck_ticks.clamp(COMB_MIN_PLUCK_TICKS, COMB_MAX_PLUCK_TICKS);
+    let contact_window_ticks = (footprint_turn_ratio * ticks_per_turn as f32 * 1.75).round() as i64;
+    let required_pluck_ticks = COMB_MIN_PLUCK_TICKS;
+    let contact_supported = contact_window_ticks >= required_pluck_ticks;
+    let pluck_ticks = if contact_supported {
+        contact_window_ticks.clamp(COMB_MIN_PLUCK_TICKS, COMB_MAX_PLUCK_TICKS)
+    } else {
+        0
+    };
     let velocity = tooth.velocity_hint.clamp(0.0, 1.0);
     let protrusion_ratio = (tooth.protrusion / tooth.radius.max(0.01)).clamp(0.0, 0.25);
     let raw_deflection = 0.055 + velocity * 0.14 + protrusion_ratio * 0.36;
-    let max_deflection_rad = (raw_deflection * COMB_DEFLECTION_SCALE)
-        .clamp(COMB_MIN_DEFLECTION_RAD, COMB_MAX_DEFLECTION_RAD);
+    let max_deflection_rad = if contact_supported {
+        (raw_deflection * COMB_DEFLECTION_SCALE)
+            .clamp(COMB_MIN_DEFLECTION_RAD, COMB_MAX_DEFLECTION_RAD)
+    } else {
+        0.0
+    };
     let vibration_ticks =
         ((0.55 + velocity * 1.35 + protrusion_ratio * 2.0) * PPQ as f32).round() as i64;
-    let vibration_ticks = vibration_ticks.clamp(COMB_MIN_VIBRATION_TICKS, COMB_MAX_VIBRATION_TICKS);
+    let vibration_ticks = if contact_supported {
+        vibration_ticks.clamp(COMB_MIN_VIBRATION_TICKS, COMB_MAX_VIBRATION_TICKS)
+    } else {
+        0
+    };
     let pitch_factor = ((tooth.midi_note - 60) as f32 * 0.35).clamp(-5.0, 8.0);
     let vibration_hz = 18.0 + pitch_factor;
     let damping = (5.5 - velocity * 1.7 + protrusion_ratio * 2.5).clamp(3.8, 6.8);
@@ -1544,6 +1627,9 @@ fn derive_comb_animation_event(tooth: &ToothHint, ticks_per_turn: i64) -> CombAn
         onset_tick: tooth.onset_tick,
         pluck_start_tick: tooth.onset_tick - pluck_ticks,
         release_tick: tooth.onset_tick,
+        contact_supported,
+        contact_window_ticks,
+        required_pluck_ticks,
         max_deflection_rad,
         vibration_ticks,
         vibration_hz,
@@ -1571,6 +1657,10 @@ fn debug_state_json(
             "yaw": controls.yaw,
             "pitch": controls.pitch,
             "radius": controls.radius,
+            "target": controls.camera_target.to_array(),
+        },
+        "ui": {
+            "visible": controls.show_ui,
         },
         "light": {
             "yaw": controls.light_yaw,
@@ -1883,6 +1973,68 @@ fn measured_comb_tine_length(model: &MovableMusicBoxModel, cylinder_radius: f32)
     } else {
         cylinder_radius * COMB_TINE_LENGTH_RATIO
     }
+}
+
+fn comb_tine_mesh(
+    length: f32,
+    width: f32,
+    thickness: f32,
+    segment_count: usize,
+    deflection: f32,
+) -> Mesh {
+    let segment_count = segment_count.max(1);
+    let half_width = width * 0.5;
+    let half_thickness = thickness * 0.5;
+    let mut positions = Vec::<[f32; 3]>::new();
+    let mut normals = Vec::<[f32; 3]>::new();
+    let mut uvs = Vec::<[f32; 2]>::new();
+    let mut indices = Vec::<u32>::new();
+
+    for ring in 0..=segment_count {
+        let progress = ring as f32 / segment_count as f32;
+        let distance = length * progress;
+        let angle = deflection * progress.powf(1.15) * 0.55;
+        let center = Quat::from_rotation_x(angle) * Vec3::new(0.0, -distance, 0.0);
+        let tangent_angle = deflection * progress.powf(1.35);
+        let rotation = Quat::from_rotation_x(tangent_angle);
+        let normal_z = rotation * Vec3::Z;
+
+        let corners = [
+            center + rotation * Vec3::new(-half_width, 0.0, -half_thickness),
+            center + rotation * Vec3::new(half_width, 0.0, -half_thickness),
+            center + rotation * Vec3::new(half_width, 0.0, half_thickness),
+            center + rotation * Vec3::new(-half_width, 0.0, half_thickness),
+        ];
+        for corner in corners {
+            positions.push(corner.to_array());
+            normals.push(normal_z.to_array());
+            uvs.push([progress, 0.0]);
+        }
+    }
+
+    for ring in 0..segment_count {
+        let base = (ring * 4) as u32;
+        let next = base + 4;
+        for side in 0..4 {
+            let a = base + side;
+            let b = base + (side + 1) % 4;
+            let c = next + (side + 1) % 4;
+            let d = next + side;
+            indices.extend_from_slice(&[a, b, c, a, c, d]);
+        }
+    }
+    indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    let tip = (segment_count * 4) as u32;
+    indices.extend_from_slice(&[tip, tip + 2, tip + 1, tip, tip + 3, tip + 2]);
+
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(indices))
 }
 
 fn hemisphere_mesh(radius: f32, sectors: u32, stacks: u32) -> Mesh {
@@ -2222,5 +2374,39 @@ mod tests {
         assert!(strong_event.max_deflection_rad > weak_event.max_deflection_rad);
         assert!(strong_event.vibration_ticks > weak_event.vibration_ticks);
         assert_eq!(strong_event.release_tick, strong.onset_tick);
+    }
+
+    #[test]
+    fn too_short_tooth_does_not_fake_pluck_or_vibration() {
+        let tooth = ToothHint {
+            midi_note: 60,
+            onset_tick: PPQ,
+            angle_rad: 0.0,
+            axial_position: 0.0,
+            radius: 18.0,
+            protrusion: 1.5,
+            width: 0.5,
+            length_along_rotation: 0.01,
+            velocity_hint: 1.0,
+        };
+        let event = derive_comb_animation_event(&tooth, PPQ * 8);
+        let mechanism = MechanismResource {
+            hint: MechanismLayoutHint {
+                cylinder_radius: 18.0,
+                cylinder_length: 80.0,
+                track_spacing: 2.0,
+                events: vec![tooth],
+                diagnostics: Vec::new(),
+            },
+            comb_animation_events: vec![event.clone()],
+            ticks_per_turn: PPQ * 8,
+            quarter_millis: 500,
+        };
+
+        assert!(!event.contact_supported);
+        assert!(event.contact_window_ticks < event.required_pluck_ticks);
+        assert_eq!(event.max_deflection_rad, 0.0);
+        assert_eq!(event.vibration_ticks, 0);
+        assert!(comb_tine_sample(event.midi_note, event.release_tick, None, &mechanism).is_none());
     }
 }

@@ -619,6 +619,48 @@ Validation notes:
   0.372422) and `target/airlet-adaptive-comb-animation-close-shot.png`
   (1280x800, mean 0.408263).
 
+### Close-Up Comb Motion Validation
+
+Single overview screenshots are not enough to judge pluck/release/vibration
+quality. The next visual-quality gate is a repeatable close-up frame sequence
+around one mechanism event.
+
+Implementation checklist:
+
+- [x] Add a Python debug helper that drives MCP to open the box, focus a close
+  camera, seek around a selected comb event, and capture frames.
+- [x] Add MCP controls for screenshot-focused camera target and UI visibility.
+- [x] Capture pre-pluck, mid-pluck, release, early-vibration, and late-decay
+  frames from the same event.
+- [x] Build a contact sheet so visual changes can be compared without manually
+  opening each PNG.
+- [x] Include the derived animation parameters next to the generated frames.
+- [x] Validate the sequence against a running Airlet demo.
+- [x] Represent each free comb tine as one deformable mesh instead of multiple
+  segment entities.
+- [x] Gate the visual pluck/vibration on tooth contact length so too-short
+  teeth do not fake a pluck or auto-vibrate.
+
+Validation notes:
+
+- `uv run --project py airlet-comb-motion-sequence` captures a six-frame
+  close-up sequence plus `sequence.json` metadata and `contact_sheet.png`.
+- MCP now supports screenshot-focused camera target overrides and hiding the
+  egui panel via `set_ui`.
+- The side-view sequence at
+  `target/comb-motion-sequence-segmented/contact_sheet.png` made the previous
+  segment-entity prototype visibly readable; the implementation then moved that
+  shape into a single deformable mesh per tine.
+- `target/airlet-single-mesh-comb-debug.json` reports 36 animation events,
+  every preview row aligned to onset, and every default Air event has
+  `contact_supported = true` with `contact_window_ticks = 553` versus
+  `required_pluck_ticks = 60`.
+- `target/comb-motion-sequence-single-mesh/contact_sheet.png` validates the
+  same close-up sequence against the single-mesh implementation.
+- `too_short_tooth_does_not_fake_pluck_or_vibration` verifies that insufficient
+  tooth length yields `contact_supported = false`, zero deflection, zero
+  vibration duration, and no comb animation sample.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the
