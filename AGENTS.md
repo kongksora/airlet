@@ -26,6 +26,9 @@
 - Prefer crate APIs and thin app wiring over new bins.
 - Keep `crates/airlet` free of Bevy, egui, windowing, rendering, and app UI
   dependencies.
+- Prefer workspace dependency inheritance through `[workspace.dependencies]`.
+- Avoid exact dependency versions in individual crates unless a crate genuinely
+  needs a specific override.
 
 ## Python And Asset Experiments
 

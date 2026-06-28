@@ -136,12 +136,69 @@ Current probe result:
 
 After the classification is validated visually:
 
-- [ ] Move closed-model rendering to grouped Bevy entities.
+- [ ] Add a model-paired `spec.toml` that records closed/open clusters, mesh
+  roles, lid pivot, lid axis, and musical cylinder axis.
+- [ ] Move closed-model rendering to grouped Bevy entities driven by the spec.
 - [ ] Add `LidAnimation { t, pivot, axis, closed_angle, open_angle }`.
-- [ ] Add an egui `Lid t` slider and optional play/pause toggle.
+- [ ] Add parameterized musical cylinder rotation.
+- [ ] Add egui sliders/toggles for lid `t` and cylinder rotation/playback.
 - [ ] Validate screenshots at `t=0`, `t=0.5`, and `t=1`.
 - [ ] If the lid/body mesh is fused, add an explicit preprocessing step instead
   of pretending Bevy transforms can separate it cleanly.
+
+### Spec-Driven Rig Roadmap
+
+The app should use the closed model as the runtime exhibit state and treat the
+open model only as rigging reference data. Model-specific rigging belongs in a
+model-adjacent `spec.toml`, so later downloaded or custom music-box models can
+ship their own mesh roles and axes without requiring code changes.
+
+Implementation checklist:
+
+- [x] Create `assets/models/converted/spec.toml` for the current GLB.
+- [x] Extend the Python probe to emit a spec draft with closed model roles,
+  lid pivot/axis, open angle, and cylinder axis.
+- [x] Add an independent `crates/airlet-model` crate that owns model spec
+  loading, mesh grouping, movable-model state, and parametric rig poses.
+- [x] Keep `crates/airlet-model` Bevy-free; the app converts its data into Bevy
+  entities and transforms.
+- [x] Expose APIs to redefine cylinder and comb modeling data for the future
+  hint-to-model path.
+- [x] Load the spec through `airlet-model` from the Bevy app.
+- [x] Instantiate only the closed-model mesh primitives rather than the whole
+  GLB scene.
+- [x] Group lid meshes under a pivot entity and rotate them with `lid_t`.
+- [x] Group musical cylinder meshes under an axis pivot and rotate them with a
+  parameter.
+- [x] Add egui controls for lid `t`, cylinder angle, and cylinder auto-spin.
+- [x] Screenshot-validate visible closed, half-open, and open states.
+
+### Basis-Aligned Rig Roadmap
+
+The downloaded closed model is not aligned to world X/Y/Z. Rotating the lid or
+cylinder around world axes is therefore wrong. The model pipeline must establish
+a model-local basis first, align the closed model into Airlet's standard
+coordinates, and then apply part rotations in that aligned space.
+
+Implementation checklist:
+
+- [x] Extend the Python probe to calculate a closed-model basis from PCA and
+  emit `[basis]` into the generated spec.
+- [x] Add `[basis]` to `assets/models/converted/spec.toml`.
+- [x] Extend `airlet-model` so it parses the basis and exposes root alignment,
+  local-to-rig point conversion, and local-to-rig axis conversion.
+- [x] Update the Bevy adapter so the root transform aligns the closed model to
+  standard coordinates before lid and cylinder rotations.
+- [x] Recompute lid and cylinder pivots/axes through the basis instead of
+  assuming the model is world-axis aligned.
+- [x] Screenshot-validate `lid_t=0`, `lid_t=0.5`, and `lid_t=1` after alignment.
+
+Current caveat:
+
+- The closed model is basis-aligned and parameterized, but the lid pivot remains
+  an inferred rear-lower-edge point. It opens in the correct direction; future
+  polish should identify the hinge hardware meshes and move the pivot exactly
+  onto that hinge line.
 
 ## API Polish Roadmap
 

@@ -1,6 +1,16 @@
 [workspace]
-members = ["crates/airlet"]
+members = ["crates/airlet", "crates/airlet-model"]
 resolver = "3"
+
+[workspace.dependencies]
+bevy = "0.19"
+bevy_egui = "0.40"
+glam = "0.30"
+rand = "0.10"
+rodio = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
 
 [package]
 name = "airlet-app"
@@ -13,6 +23,7 @@ path = "src/main.rs"
 
 [dependencies]
 airlet = { path = "crates/airlet" }
-bevy = "0.19.0"
-bevy_egui = "0.40.1"
-rodio = "0.22.2"
+airlet-model = { path = "crates/airlet-model" }
+bevy = { workspace = true }
+bevy_egui = { workspace = true }
+rodio = { workspace = true }

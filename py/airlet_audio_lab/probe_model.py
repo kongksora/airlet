@@ -93,9 +93,10 @@ def main() -> None:
     ]
     cluster_probes.sort(key=lambda cluster: cluster.name)
 
+    basis = _estimate_basis(meshes, labels, closed_label)
     lid = _largest_role_mesh(probes, "lid")
     open_lid = _open_lid_reference(meshes, labels, open_label)
-    hinge = _estimate_hinge(lid, open_lid)
+    hinge = _estimate_hinge(lid, open_lid, basis)
 
     payload = {
         "model": str(args.model),
@@ -104,6 +105,7 @@ def main() -> None:
             "cluster": "closed",
             "reason": "The closed cluster has the lower vertical max bound.",
         },
+        "basis": basis,
         "lid_animation_estimate": hinge,
         "meshes": [asdict(probe) for probe in probes],
     }
@@ -111,12 +113,15 @@ def main() -> None:
     json_path = args.out_dir / "model-probe.json"
     report_path = args.out_dir / "model-probe.md"
     image_path = args.out_dir / "model-probe-debug.png"
+    spec_path = args.out_dir / "model-spec.toml"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     report_path.write_text(_render_report(payload), encoding="utf-8")
+    spec_path.write_text(_render_spec_draft(payload), encoding="utf-8")
     _render_debug_image(probes, image_path)
 
     print(f"wrote {json_path}")
     print(f"wrote {report_path}")
+    print(f"wrote {spec_path}")
     print(f"wrote {image_path}")
 
 
@@ -132,6 +137,7 @@ def _collect_meshes(scene: trimesh.Scene) -> list[dict[str, Any]]:
             {
                 "node": str(node),
                 "geometry": str(geometry_name),
+                "points": points,
                 "bounds": bounds,
                 "center": bounds.mean(axis=0),
                 "extent": bounds[1] - bounds[0],
@@ -222,26 +228,55 @@ def _open_lid_reference(
     )
 
 
-def _estimate_hinge(lid: MeshProbe, open_lid: dict[str, Any]) -> dict[str, Any]:
+def _estimate_hinge(
+    lid: MeshProbe, open_lid: dict[str, Any], basis: dict[str, list[float]]
+) -> dict[str, Any]:
     lid_bounds = np.array(lid.bounds)
     open_bounds = open_lid["bounds"]
+    lid_axis = np.array(basis["right"])
     pivot = [
         float((lid_bounds[0][0] + lid_bounds[1][0]) * 0.5),
-        float(lid_bounds[1][1]),
+        float(lid_bounds[0][1]),
         float(lid_bounds[0][2]),
     ]
     closed_depth = float(lid_bounds[1][2] - lid_bounds[0][2])
     open_vertical = float(open_bounds[1][1] - open_bounds[0][1])
-    open_angle = float(np.degrees(np.arctan2(open_vertical, max(closed_depth, 1e-6))))
+    open_angle = -float(np.degrees(np.arctan2(open_vertical, max(closed_depth, 1e-6))))
     return {
         "status": "heuristic",
         "closed_lid_mesh": lid.geometry,
         "open_reference_lid_mesh": open_lid["geometry"],
         "pivot": _round_vec(np.array(pivot)),
-        "axis": [1.0, 0.0, 0.0],
+        "axis": _round_vec(lid_axis),
         "closed_angle_degrees": 0.0,
-        "open_angle_degrees": round(max(65.0, min(110.0, open_angle)), 3),
+        "open_angle_degrees": round(max(-110.0, min(-65.0, open_angle)), 3),
         "note": "Pivot is the closed lid rear/top edge; verify visually before rigging.",
+    }
+
+
+def _estimate_basis(
+    meshes: list[dict[str, Any]], labels: np.ndarray, closed_label: int
+) -> dict[str, list[float]]:
+    group = [mesh for mesh, label in zip(meshes, labels) if label == closed_label]
+    points = np.concatenate([mesh["points"] for mesh in group], axis=0)
+    centered = points - points.mean(axis=0)
+    values, vectors = np.linalg.eigh(np.cov(centered.T))
+    axes = vectors[:, np.argsort(values)[::-1]].T
+    up = axes[np.argmax(np.abs(axes[:, 1]))]
+    if up[1] < 0.0:
+        up = -up
+    horizontal = [axis for axis in axes if abs(np.dot(axis, up)) < 0.75]
+    front = max(horizontal, key=lambda axis: abs(axis[2]))
+    if front[2] > 0.0:
+        front = -front
+    right = np.cross(front, up)
+    right /= np.linalg.norm(right)
+    front = np.cross(up, right)
+    front /= np.linalg.norm(front)
+    return {
+        "right": _round_vec(right),
+        "up": _round_vec(up / np.linalg.norm(up)),
+        "front": _round_vec(front),
     }
 
 
@@ -271,6 +306,12 @@ def _render_report(payload: dict[str, Any]) -> str:
     estimate = payload["lid_animation_estimate"]
     lines.extend(
         [
+            "## Basis",
+            "",
+            f"- Right: `{payload['basis']['right']}`",
+            f"- Up: `{payload['basis']['up']}`",
+            f"- Front: `{payload['basis']['front']}`",
+            "",
             "## Lid Animation Estimate",
             "",
             f"- Closed lid mesh: `{estimate['closed_lid_mesh']}`",
@@ -294,6 +335,81 @@ def _render_report(payload: dict[str, Any]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _render_spec_draft(payload: dict[str, Any]) -> str:
+    closed = [mesh for mesh in payload["meshes"] if mesh["cluster"] == "closed"]
+    roles = {
+        role: [int(_mesh_index(mesh["geometry"])) for mesh in closed if mesh["role"] == role]
+        for role in ["body", "lid", "hinge", "handle", "mechanism"]
+    }
+    unknown = [int(_mesh_index(mesh["geometry"])) for mesh in closed if mesh["role"] == "unknown"]
+    mechanism_sorted = sorted(roles["mechanism"], key=lambda index: abs(index - 29))
+    cylinder_meshes = mechanism_sorted[:4] if len(mechanism_sorted) >= 4 else mechanism_sorted
+    body = sorted(
+        set(roles["body"] + roles["hinge"] + roles["handle"] + roles["mechanism"] + unknown)
+        - set(cylinder_meshes)
+        - set(roles["lid"])
+    )
+    closed_cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
+    estimate = payload["lid_animation_estimate"]
+    cylinder_center = (
+        _mesh_center(payload["meshes"], cylinder_meshes[0]) if cylinder_meshes else [0.0, 0.0, 0.0]
+    )
+
+    return "\n".join(
+        [
+            "[asset]",
+            f'gltf = "{Path(payload["model"]).relative_to("assets").as_posix()}"',
+            "",
+            "[basis]",
+            f"right = {_toml_list(payload['basis']['right'])}",
+            f"up = {_toml_list(payload['basis']['up'])}",
+            f"front = {_toml_list(payload['basis']['front'])}",
+            "",
+            "[closed_model]",
+            f"mesh_indices = {_toml_list(sorted(_mesh_index(mesh['geometry']) for mesh in closed))}",
+            f"bounds_min = {_toml_list(closed_cluster['bounds'][0])}",
+            f"bounds_max = {_toml_list(closed_cluster['bounds'][1])}",
+            f"body_meshes = {_toml_list(body)}",
+            f"lid_meshes = {_toml_list(roles['lid'])}",
+            f"hinge_meshes = {_toml_list(roles['hinge'])}",
+            f"handle_meshes = {_toml_list(roles['handle'])}",
+            f"mechanism_meshes = {_toml_list(roles['mechanism'])}",
+            "",
+            "[lid]",
+            f"meshes = {_toml_list(roles['lid'])}",
+            f"pivot = {_toml_list(estimate['pivot'])}",
+            f"axis = {_toml_list(estimate['axis'])}",
+            f"closed_degrees = {estimate['closed_angle_degrees']}",
+            f"open_degrees = {estimate['open_angle_degrees']}",
+            "",
+            "[cylinder]",
+            f"meshes = {_toml_list(cylinder_meshes)}",
+            f"pivot = {_toml_list(cylinder_center)}",
+            f"axis = {_toml_list(payload['basis']['right'])}",
+            "degrees_per_second = 120.0",
+            "",
+        ]
+    )
+
+
+def _mesh_index(geometry: str) -> int:
+    if geometry == "Mesh":
+        return 0
+    return int(geometry.split(".", 1)[1])
+
+
+def _mesh_center(meshes: list[dict[str, Any]], index: int) -> list[float]:
+    name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
+    for mesh in meshes:
+        if mesh["geometry"] == name:
+            return mesh["center"]
+    return [0.0, 0.0, 0.0]
+
+
+def _toml_list(values: list[Any]) -> str:
+    return "[" + ", ".join(str(round(value, 6)) if isinstance(value, float) else str(value) for value in values) + "]"
 
 
 def _render_debug_image(probes: list[MeshProbe], path: Path) -> None:
