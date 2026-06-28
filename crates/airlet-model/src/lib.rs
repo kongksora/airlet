@@ -115,6 +115,20 @@ pub struct ClosedModelSpec {
 pub struct MeshPartSpec {
     #[serde(default)]
     pub meshes: Vec<usize>,
+    #[serde(default)]
+    pub radial_direction: [f32; 3],
+    #[serde(default)]
+    pub axial_min: f32,
+    #[serde(default)]
+    pub axial_max: f32,
+    #[serde(default)]
+    pub tip_radius: f32,
+    #[serde(default)]
+    pub root_radius: f32,
+    #[serde(default)]
+    pub clearance: f32,
+    #[serde(default)]
+    pub tine_length: f32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -406,6 +420,16 @@ axis = [0.0, 0.0, 2.0]
 radius = 0.25
 length = 1.5
 degrees_per_second = 120.0
+
+[comb]
+meshes = [1]
+radial_direction = [0.0, 1.0, 0.0]
+axial_min = -0.6
+axial_max = 0.6
+tip_radius = 0.3
+root_radius = 0.8
+clearance = 0.05
+tine_length = 0.5
 "#;
 
     #[test]
@@ -413,9 +437,21 @@ degrees_per_second = 120.0
         let spec = ModelSpec::from_toml_str(SPEC).unwrap();
         let model = MovableMusicBoxModel::new(spec);
         assert_eq!(model.group_for_mesh(0), MeshGroup::Lid);
-        assert_eq!(model.group_for_mesh(1), MeshGroup::Static);
+        assert_eq!(model.group_for_mesh(1), MeshGroup::Comb);
         assert_eq!(model.group_for_mesh(2), MeshGroup::Cylinder);
         assert_eq!(model.group_for_mesh(99), MeshGroup::Excluded);
+    }
+
+    #[test]
+    fn parses_measured_comb_geometry() {
+        let spec = ModelSpec::from_toml_str(SPEC).unwrap();
+
+        assert_eq!(spec.comb.meshes, vec![1]);
+        assert_eq!(spec.comb.radial_direction, [0.0, 1.0, 0.0]);
+        assert_eq!(spec.comb.axial_min, -0.6);
+        assert_eq!(spec.comb.axial_max, 0.6);
+        assert_eq!(spec.comb.tip_radius, 0.3);
+        assert_eq!(spec.comb.clearance, 0.05);
     }
 
     #[test]

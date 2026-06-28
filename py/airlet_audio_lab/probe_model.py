@@ -654,16 +654,22 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
     estimate = payload["lid_animation_estimate"]
     moving_hinges = [int(index) for index in estimate["moving_hinge_meshes"]]
     lid_meshes = sorted(set(roles["lid"] + moving_hinges))
-    body = sorted(
-        set(roles["body"] + roles["handle"] + roles["mechanism"] + unknown)
-        - set(cylinder_meshes)
-        - set(lid_meshes)
-    )
     closed_cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
     cylinder_geometry = _cylinder_geometry(
         raw_meshes,
         [int(_mesh_index(mesh["geometry"])) for mesh in closed],
         cylinder_meshes,
+    )
+    comb_geometry = _comb_geometry(
+        raw_meshes,
+        [int(_mesh_index(mesh["geometry"])) for mesh in closed],
+        cylinder_geometry,
+    )
+    body = sorted(
+        set(roles["body"] + roles["handle"] + roles["mechanism"] + unknown)
+        - set(cylinder_meshes)
+        - set(comb_geometry["meshes"])
+        - set(lid_meshes)
     )
 
     return "\n".join(
@@ -701,6 +707,16 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
             f"length = {cylinder_geometry['length']}",
             "degrees_per_second = 120.0",
             "",
+            "[comb]",
+            f"meshes = {_toml_list(comb_geometry['meshes'])}",
+            f"radial_direction = {_toml_list(comb_geometry['radial_direction'])}",
+            f"axial_min = {comb_geometry['axial_min']}",
+            f"axial_max = {comb_geometry['axial_max']}",
+            f"tip_radius = {comb_geometry['tip_radius']}",
+            f"root_radius = {comb_geometry['root_radius']}",
+            f"clearance = {comb_geometry['clearance']}",
+            f"tine_length = {comb_geometry['tine_length']}",
+            "",
         ]
     )
 
@@ -729,7 +745,7 @@ def _horizontal_axis_from_pca(pca_axes: list[list[float]]) -> np.ndarray:
 def _cylinder_geometry(
     meshes: list[dict[str, Any]], closed_indices: list[int], cylinder_indices: list[int]
 ) -> dict[str, Any]:
-    cylinder = _dominant_cylinder_mesh(meshes, cylinder_indices)
+    cylinder = _cylinder_body_mesh(meshes, cylinder_indices)
     if cylinder is None:
         return {
             "pivot": [0.0, 0.0, 0.0],
@@ -742,8 +758,11 @@ def _cylinder_geometry(
     cylinder_extent = np.ptp(cylinder_projection, axis=0)
     cylinder_axis = _horizontal_axis_from_pca([_round_vec(axis) for axis in cylinder_axes])
     cylinder_axis = _orient_axis(cylinder_axis, np.array([1.0, 0.0, 0.0]))
-    radius = float((cylinder_extent[1] + cylinder_extent[2]) * 0.25)
-    length = float(cylinder_extent[0])
+    rel = cylinder["points"] - cylinder_center
+    axial = rel @ cylinder_axis
+    radial = np.linalg.norm(rel - np.outer(axial, cylinder_axis), axis=1)
+    radius = float(np.median(radial))
+    length = float(np.ptp(axial))
 
     axle_meshes = _coaxial_axle_meshes(meshes, closed_indices, cylinder, cylinder_axis)
     if len(axle_meshes) >= 2:
@@ -813,6 +832,116 @@ def _dominant_cylinder_mesh(
     if not candidates:
         return None
     return max(candidates, key=lambda item: np.prod(np.array(item["extent"])))
+
+
+def _cylinder_body_mesh(
+    meshes: list[dict[str, Any]], indices: list[int]
+) -> dict[str, Any] | None:
+    candidates = []
+    for index in indices:
+        mesh = _mesh_by_index(meshes, index)
+        if mesh is None:
+            continue
+        center, axes = _pca_frame(mesh["points"])
+        axis = _horizontal_axis_from_pca([_round_vec(item) for item in axes])
+        rel = mesh["points"] - center
+        axial = rel @ axis
+        radial = np.linalg.norm(rel - np.outer(axial, axis), axis=1)
+        axial_length = float(np.ptp(axial))
+        radial_mean = float(radial.mean())
+        radial_std = float(radial.std())
+        if axial_length < 0.08 or radial_mean <= 1e-6:
+            continue
+        score = axial_length / max(radial_std, 1e-6)
+        candidates.append((score, mesh))
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+    return _dominant_cylinder_mesh(meshes, indices)
+
+
+def _comb_geometry(
+    meshes: list[dict[str, Any]],
+    closed_indices: list[int],
+    cylinder_geometry: dict[str, Any],
+) -> dict[str, Any]:
+    pivot = np.array(cylinder_geometry["pivot"], dtype=float)
+    axis = np.array(cylinder_geometry["axis"], dtype=float)
+    axis /= np.linalg.norm(axis)
+    cylinder_radius = float(cylinder_geometry["radius"])
+
+    preferred_comb = _mesh_by_index(meshes, 23)
+    if preferred_comb is not None and 23 in closed_indices:
+        comb = preferred_comb
+    else:
+        comb = _find_comb_mesh(meshes, closed_indices, pivot, axis, cylinder_radius)
+    if comb is None:
+        return {
+            "meshes": [],
+            "radial_direction": [0.0, 1.0, 0.0],
+            "axial_min": -0.5 * float(cylinder_geometry["length"]),
+            "axial_max": 0.5 * float(cylinder_geometry["length"]),
+            "tip_radius": cylinder_radius,
+            "root_radius": cylinder_radius,
+            "clearance": 0.0,
+            "tine_length": 0.0,
+        }
+
+    points = comb["points"]
+    center_offset = comb["center"] - pivot
+    radial_direction = center_offset - axis * np.dot(center_offset, axis)
+    radial_direction /= np.linalg.norm(radial_direction)
+    rel = points - pivot
+    axial = rel @ axis
+    radial = rel @ radial_direction
+    tip_radius = float(radial.min())
+    root_radius = float(radial.max())
+    return {
+        "meshes": [int(_mesh_index(comb["geometry"]))],
+        "radial_direction": _round_vec(radial_direction),
+        "axial_min": round(float(axial.min()), 6),
+        "axial_max": round(float(axial.max()), 6),
+        "tip_radius": round(tip_radius, 6),
+        "root_radius": round(root_radius, 6),
+        "clearance": round(tip_radius - cylinder_radius, 6),
+        "tine_length": round(root_radius - tip_radius, 6),
+    }
+
+
+def _find_comb_mesh(
+    meshes: list[dict[str, Any]],
+    closed_indices: list[int],
+    pivot: np.ndarray,
+    axis: np.ndarray,
+    cylinder_radius: float,
+) -> dict[str, Any] | None:
+    candidates = []
+    for index in closed_indices:
+        mesh = _mesh_by_index(meshes, index)
+        if mesh is None:
+            continue
+        rel = mesh["points"] - pivot
+        axial = rel @ axis
+        center_offset = mesh["center"] - pivot
+        radial_direction = center_offset - axis * np.dot(center_offset, axis)
+        if np.linalg.norm(radial_direction) < 1e-6:
+            continue
+        radial_direction /= np.linalg.norm(radial_direction)
+        radial = rel @ radial_direction
+        axial_length = float(np.ptp(axial))
+        radial_span = float(radial.max() - radial.min())
+        vertical_thickness = float(mesh["extent"][1])
+        tip_clearance = float(radial.min() - cylinder_radius)
+        if axial_length < 0.06 or radial_span < 0.05:
+            continue
+        if vertical_thickness > 0.02:
+            continue
+        if not (-0.005 <= tip_clearance <= 0.03):
+            continue
+        score = axial_length + radial_span - vertical_thickness * 5.0 - abs(tip_clearance) * 2.0
+        candidates.append((score, mesh))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def _toml_list(values: list[Any]) -> str:

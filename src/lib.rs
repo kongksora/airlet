@@ -22,7 +22,9 @@ use bevy::{
     asset::RenderAssetUsages,
     gltf::{Gltf, GltfMaterial, GltfMesh, GltfNode},
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
+    light::{CascadeShadowConfigBuilder, DirectionalLightShadowMap, PointLightShadowMap},
     mesh::Indices,
+    pbr::ContactShadows,
     prelude::*,
     render::render_resource::PrimitiveTopology,
     render::view::screenshot::{Screenshot, save_to_disk},
@@ -44,6 +46,7 @@ const COMB_TINE_LENGTH_RATIO: f32 = 1.35;
 const COMB_TINE_WIDTH_RATIO: f32 = 0.035;
 const COMB_TINE_THICKNESS_RATIO: f32 = 0.025;
 const COMB_TRACK_USABLE_LENGTH_RATIO: f32 = 0.86;
+const DEFAULT_TOOTH_CLEARANCE_RATIO: f32 = 0.82;
 const DEFAULT_DEBUG_BIND: &str = "127.0.0.1:4777";
 
 pub fn run() {
@@ -59,6 +62,8 @@ pub fn run() {
         }))
         .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.035, 0.034, 0.032)))
+        .insert_resource(DirectionalLightShadowMap { size: 4096 })
+        .insert_resource(PointLightShadowMap { size: 4096 })
         .insert_resource(GlobalAmbientLight {
             color: Color::srgb(0.78, 0.75, 0.70),
             brightness: 38.0,
@@ -162,6 +167,8 @@ struct MechanismCalibration {
     usable_length: f32,
     side_margin: f32,
     track_spacing: f32,
+    axial_min: f32,
+    axial_max: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -454,6 +461,12 @@ fn setup_scene(
             shadow_maps_enabled: true,
             ..default()
         },
+        CascadeShadowConfigBuilder {
+            first_cascade_far_bound: 2.0,
+            maximum_distance: 8.0,
+            ..default()
+        }
+        .build(),
         Transform::from_xyz(0.0, 4.0, 0.0).looking_at(EXHIBIT_TARGET, Vec3::Y),
     ));
 
@@ -498,6 +511,11 @@ fn setup_scene(
         Name::new("Exhibit Camera"),
         ExhibitCamera,
         Camera3d::default(),
+        ContactShadows {
+            linear_steps: 32,
+            thickness: 0.03,
+            length: 0.65,
+        },
         camera_transform(&controls),
     ));
 }
@@ -857,9 +875,9 @@ fn spawn_spec_model(
 
     for primitive in pending {
         let parent = match primitive.group {
-            MeshGroup::Static | MeshGroup::Comb => root,
+            MeshGroup::Static => root,
             MeshGroup::Lid => lid_pivot,
-            MeshGroup::Cylinder => continue,
+            MeshGroup::Cylinder | MeshGroup::Comb => continue,
             MeshGroup::Excluded => continue,
         };
         let mut transform = primitive.transform;
@@ -960,17 +978,29 @@ fn spawn_hint_mechanism(
     hint: &MechanismLayoutHint,
 ) {
     let axis = vec3(cylinder_pose.axis).normalize_or_zero();
-    let (radial_zero, tangent_zero) = cylinder_radial_frame(axis);
+    let radial_zero = measured_comb_radial_direction(model, axis);
+    let tangent_zero = axis.cross(radial_zero).normalize_or_zero();
     let cylinder_radius = model.spec().cylinder.radius.max(0.01);
     let cylinder_length = model.spec().cylinder.length.max(0.01);
-    let calibration = mechanism_calibration(hint, cylinder_length);
-    let tooth_protrusion = cylinder_radius * TOOTH_RADIAL_PROTRUSION_RATIO;
+    let calibration = mechanism_calibration(hint, Some(model), cylinder_length);
+    let measured_clearance = model.spec().comb.clearance.max(0.0);
+    let tooth_total_height = if measured_clearance > f32::EPSILON {
+        measured_clearance * DEFAULT_TOOTH_CLEARANCE_RATIO
+    } else {
+        cylinder_radius * TOOTH_HEIGHT_RATIO
+    };
     let tooth_width = cylinder_length * TOOTH_WIDTH_RATIO;
-    let tooth_height = cylinder_radius * TOOTH_HEIGHT_RATIO;
-    let tooth_radius = tooth_width.min(tooth_protrusion) * 0.5;
-    let tooth_shank_height = tooth_height.max(tooth_radius);
-    let comb_tine_length = cylinder_radius * COMB_TINE_LENGTH_RATIO;
-    let comb_tine_width = cylinder_length * COMB_TINE_WIDTH_RATIO;
+    let tooth_radius = tooth_width
+        .min(cylinder_radius * TOOTH_RADIAL_PROTRUSION_RATIO)
+        .min(tooth_total_height * 0.35)
+        .max(cylinder_radius * 0.004);
+    let tooth_shank_height = (tooth_total_height - tooth_radius).max(tooth_radius);
+    let comb_tine_length = measured_comb_tine_length(model, cylinder_radius);
+    let comb_tine_width = if calibration.track_spacing > f32::EPSILON {
+        calibration.track_spacing * 0.55
+    } else {
+        cylinder_length * COMB_TINE_WIDTH_RATIO
+    };
     let comb_tine_thickness = cylinder_radius * COMB_TINE_THICKNESS_RATIO;
     let cylinder_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.94, 0.69, 0.23),
@@ -1077,9 +1107,9 @@ fn spawn_hint_mechanism(
     notes.dedup();
     for midi_note in notes {
         let axial = note_axial_position(midi_note, &calibration);
-        let position = axis * axial + radial_zero * (cylinder_radius + comb_tine_length * 0.55)
-            - tangent_zero * 0.018;
-        let rotation = basis_rotation(axis, -radial_zero, tangent_zero);
+        let tip_radius = measured_comb_tip_radius(model, cylinder_radius, tooth_total_height);
+        let position = axis * axial + radial_zero * (tip_radius + comb_tine_length * 0.5);
+        let rotation = basis_rotation(axis, radial_zero, tangent_zero);
         let entity = commands
             .spawn((
                 Name::new(format!("Comb Tine midi {midi_note}")),
@@ -1267,8 +1297,15 @@ fn debug_state_json(
 
 fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) -> Value {
     let cylinder_length = model.model.spec().cylinder.length.max(0.01);
-    let calibration = mechanism_calibration(&mechanism.hint, cylinder_length);
+    let cylinder_radius = model.model.spec().cylinder.radius.max(0.01);
+    let calibration = mechanism_calibration(&mechanism.hint, Some(&model.model), cylinder_length);
     let timing = timing_validation(&mechanism.hint, mechanism.ticks_per_turn);
+    let measured_clearance = model.model.spec().comb.clearance.max(0.0);
+    let tooth_total_height = if measured_clearance > f32::EPSILON {
+        measured_clearance * DEFAULT_TOOTH_CLEARANCE_RATIO
+    } else {
+        cylinder_radius * TOOTH_HEIGHT_RATIO
+    };
     let teeth = mechanism
         .hint
         .events
@@ -1307,6 +1344,16 @@ fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) ->
         "calibration": calibration,
         "timing": timing,
         "comb": {
+            "meshes": &model.model.spec().comb.meshes,
+            "radial_direction": model.model.spec().comb.radial_direction,
+            "axial_min": calibration.axial_min,
+            "axial_max": calibration.axial_max,
+            "tip_radius": measured_comb_tip_radius(&model.model, cylinder_radius, tooth_total_height),
+            "root_radius": model.model.spec().comb.root_radius,
+            "clearance": measured_comb_tip_radius(&model.model, cylinder_radius, tooth_total_height) - cylinder_radius,
+            "measured_clearance": model.model.spec().comb.clearance,
+            "tine_length": measured_comb_tine_length(&model.model, cylinder_radius),
+            "tooth_tip_radius": cylinder_radius + tooth_total_height,
             "lowest_midi": calibration.lowest_midi,
             "highest_midi": calibration.highest_midi,
             "track_count": calibration.track_count,
@@ -1390,7 +1437,11 @@ fn tooth_transform(
     Transform::from_translation(position).with_rotation(basis_rotation(axis, radial, tangent))
 }
 
-fn mechanism_calibration(hint: &MechanismLayoutHint, cylinder_length: f32) -> MechanismCalibration {
+fn mechanism_calibration(
+    hint: &MechanismLayoutHint,
+    model: Option<&MovableMusicBoxModel>,
+    cylinder_length: f32,
+) -> MechanismCalibration {
     let (lowest_midi, highest_midi) = hint
         .events
         .iter()
@@ -1404,8 +1455,20 @@ fn mechanism_calibration(hint: &MechanismLayoutHint, cylinder_length: f32) -> Me
         (60, 60)
     };
     let track_count = (highest_midi - lowest_midi + 1).max(1) as usize;
-    let usable_length = cylinder_length * COMB_TRACK_USABLE_LENGTH_RATIO;
-    let side_margin = (cylinder_length - usable_length) * 0.5;
+    let measured_axial = model.and_then(|model| {
+        let comb = &model.spec().comb;
+        if comb.axial_max > comb.axial_min {
+            Some((comb.axial_min, comb.axial_max))
+        } else {
+            None
+        }
+    });
+    let (axial_min, axial_max) = measured_axial.unwrap_or_else(|| {
+        let usable_length = cylinder_length * COMB_TRACK_USABLE_LENGTH_RATIO;
+        (-usable_length * 0.5, usable_length * 0.5)
+    });
+    let usable_length = axial_max - axial_min;
+    let side_margin = (cylinder_length - usable_length).max(0.0) * 0.5;
     let track_spacing = if track_count > 1 {
         usable_length / (track_count - 1) as f32
     } else {
@@ -1419,6 +1482,8 @@ fn mechanism_calibration(hint: &MechanismLayoutHint, cylinder_length: f32) -> Me
         usable_length,
         side_margin,
         track_spacing,
+        axial_min,
+        axial_max,
     }
 }
 
@@ -1431,7 +1496,41 @@ fn note_axial_position(midi_note: i32, calibration: &MechanismCalibration) -> f3
         0.0
     } else {
         let track = track_index(midi_note, calibration).min(calibration.track_count - 1);
-        -calibration.usable_length * 0.5 + track as f32 * calibration.track_spacing
+        calibration.axial_min + track as f32 * calibration.track_spacing
+    }
+}
+
+fn measured_comb_radial_direction(model: &MovableMusicBoxModel, axis: Vec3) -> Vec3 {
+    let measured = vec3(model.spec().comb.radial_direction);
+    let measured = measured - axis * measured.dot(axis);
+    if measured.length_squared() > 1e-6 {
+        measured.normalize()
+    } else {
+        cylinder_radial_frame(axis).0
+    }
+}
+
+fn measured_comb_tip_radius(
+    model: &MovableMusicBoxModel,
+    cylinder_radius: f32,
+    tooth_total_height: f32,
+) -> f32 {
+    let tip_radius = model.spec().comb.tip_radius;
+    if tip_radius > cylinder_radius {
+        tip_radius
+    } else {
+        cylinder_radius + tooth_total_height * 1.2
+    }
+}
+
+fn measured_comb_tine_length(model: &MovableMusicBoxModel, cylinder_radius: f32) -> f32 {
+    let comb = &model.spec().comb;
+    if comb.tine_length > f32::EPSILON {
+        comb.tine_length
+    } else if comb.root_radius > comb.tip_radius {
+        comb.root_radius - comb.tip_radius
+    } else {
+        cylinder_radius * COMB_TINE_LENGTH_RATIO
     }
 }
 
@@ -1654,7 +1753,7 @@ mod tests {
             diagnostics: Vec::new(),
         };
 
-        let calibration = mechanism_calibration(&hint, 10.0);
+        let calibration = mechanism_calibration(&hint, None, 10.0);
 
         assert_eq!(calibration.lowest_midi, 60);
         assert_eq!(calibration.highest_midi, 64);
@@ -1687,5 +1786,23 @@ mod tests {
                 .iter()
                 .all(|diagnostic| !diagnostic.message.contains("dense teeth near angle"))
         );
+    }
+
+    #[test]
+    fn default_model_spec_exposes_measured_comb_clearance() {
+        let model = load_movable_model();
+        let spec = model.model.spec();
+        let calibration = mechanism_calibration(
+            &load_mechanism_layout().hint,
+            Some(&model.model),
+            spec.cylinder.length,
+        );
+
+        assert!(spec.cylinder.radius > 0.0);
+        assert!(spec.comb.tip_radius > spec.cylinder.radius);
+        assert!(spec.comb.clearance > 0.0);
+        assert_eq!(spec.comb.meshes, vec![23]);
+        assert!((calibration.axial_min - spec.comb.axial_min).abs() < 1e-6);
+        assert!((calibration.axial_max - spec.comb.axial_max).abs() < 1e-6);
     }
 }

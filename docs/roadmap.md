@@ -438,6 +438,78 @@ Validation result:
 - Runtime endpoint validation file:
   `target/airlet-time-mapping-debug.json`.
 
+### Comb Probe, Clearance, And Contact Animation Roadmap
+
+The procedural comb currently uses a derived range from cylinder length and
+places tines by visual approximation. That is not sufficient: the source model
+already contains a cylinder and comb with a visible gap, and the procedural
+mechanism must inherit those dimensions rather than collapsing the comb onto
+the cylinder.
+
+Implementation checklist:
+
+- [x] Extend the model probe to identify the source comb mesh/bounds and
+  cylinder-to-comb clearance.
+- [x] Recompute the real cylinder radius from cylinder geometry and axle
+  constraints.
+- [x] Store comb meshes, axial range, radial direction, tip radius, and
+  clearance in `assets/models/converted/spec.toml`.
+- [x] Extend `airlet-model` spec parsing for the measured comb geometry.
+- [x] Drive procedural comb track range from measured comb bounds instead of
+  `cylinder_length * 0.86`.
+- [x] Place comb tines so their tips preserve the measured
+  cylinder/comb clearance.
+- [x] Expose clearance and comb range in `dump_mechanism` for validation.
+- [x] Screenshot-validate visible cylinder/comb gap and corrected tooth range.
+- [x] Draft the next-stage animation model for tooth pluck, tine deflection,
+  and damped vibration.
+- [x] Draft the render roadmap for high-shadow-quality and cinematic lighting.
+
+Probe result:
+
+- Source cylinder body mesh: `Mesh.027`, fitted radius `0.049188`, length
+  `0.127228`.
+- Source comb mesh: `Mesh.023`.
+- Comb axial range: `-0.05439..0.057542`.
+- Comb radial direction: `[-0.863441, 0.077203, 0.498507]`.
+- Comb tip radius: `0.051817`; measured cylinder/comb clearance: `0.002629`.
+- Runtime validation: `target/airlet-comb-clearance-debug.json` reports
+  `tooth_tip_radius = 0.05134378`, leaving `0.00047322` static clearance before
+  tooth strike.
+- Screenshot validation: `target/airlet-comb-clearance-shot.png`, `1280x800`,
+  mean brightness `0.276168`.
+
+Tooth/comb animation model:
+
+- Keep cylinder phase as the authoritative time source:
+  `score_tick -> cylinder_degrees`.
+- For each tooth, define a contact window around its `onset_tick`; contact
+  begins when angular distance to the comb radial direction enters a small
+  threshold.
+- Compute tine deflection as a short pluck envelope: ramp while tooth passes,
+  release at the note onset, then damped oscillation
+  `deflection(t) = A * exp(-damping * t) * sin(2*pi*f*t + phase)`.
+- Drive the visible comb tine by a per-track component containing rest pose,
+  local bend axis, stiffness proxy, damping, and current displacement.
+- Couple audio and visual amplitude from the same note velocity, while keeping
+  audio synthesis independent enough to avoid frame-rate jitter.
+- Later replace rigid cuboid tines with skinned or segmented tines so the root
+  stays fixed and the tip bends.
+
+Cinematic render roadmap:
+
+- Already enabled this pass: 4096 directional shadow map, 4096 point/spot
+  shadow map, tighter directional cascades, and camera contact shadows.
+- Add a high-quality studio HDRI (`.hdr`/`.exr`) for metallic reflections and
+  image-based lighting.
+- Add authored PBR material sets for lacquered wood, brass, steel, and felt;
+  use glTF-friendly ORM packing for occlusion/roughness/metallic.
+- Enable HDR camera, filmic tonemapping, subtle bloom on highlights, and TAA
+  once the material/IBL stack is stable.
+- Add area-key/fill/rim light presets for gift-render shots, plus screenshot
+  presets for close-up macro views of cylinder, comb, lid, and engraved gift
+  details.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the
