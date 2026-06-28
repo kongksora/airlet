@@ -510,6 +510,39 @@ Cinematic render roadmap:
   presets for close-up macro views of cylinder, comb, lid, and engraved gift
   details.
 
+### Dense Comb And Tooth Modeling Correction
+
+The first measured-comb pass preserved the original model's range and clearance,
+but the generated mechanism was still visually under-modeled: teeth were too
+small, comb tines were emitted only for notes that appear in the song, and the
+comb lacked a fixed base region distinct from the playable tine region.
+
+Implementation checklist:
+
+- [x] Generate every comb track from `lowest_midi..=highest_midi`, not only
+  notes present in the current melody.
+- [x] Add a fixed comb base/anchor bar behind the playable tine region.
+- [x] Keep the free tine tips at the measured comb tip radius and the base
+  region toward the measured root radius.
+- [x] Increase tooth cap radius from track spacing instead of clamping it by
+  radial clearance.
+- [x] Preserve static tooth/comb clearance while making teeth visually readable.
+- [x] Expose rendered track count and fixed/free comb dimensions in
+  `dump_mechanism`.
+- [x] Screenshot-validate dense comb spacing and larger rounded teeth.
+
+Validation result:
+
+- `rendered_track_count = 21`, matching `track_count = 21`.
+- Tine width is `0.82 * track_spacing`, so the generated comb is dense instead
+  of emitting only melody notes.
+- Tooth cap radius is `0.32 * track_spacing`; radial clearance still leaves
+  `0.00021032` static gap before strike.
+- Comb free tine length: `0.13113001`; fixed base length: `0.05099499`.
+- Runtime debug file: `target/airlet-dense-comb-debug.json`.
+- Screenshot: `target/airlet-dense-comb-shot.png`, `2560x1568`, mean brightness
+  `0.451635`.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the

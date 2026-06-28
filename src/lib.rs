@@ -39,14 +39,15 @@ const DEFAULT_MODEL_SPEC: &str = "assets/models/converted/spec.toml";
 const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.60, 0.0);
 const PLATFORM_TOP_Y: f32 = 0.0;
 const MODEL_SCALE: f32 = 1.8;
-const TOOTH_RADIAL_PROTRUSION_RATIO: f32 = 0.16;
 const TOOTH_WIDTH_RATIO: f32 = 0.028;
 const TOOTH_HEIGHT_RATIO: f32 = 0.14;
 const COMB_TINE_LENGTH_RATIO: f32 = 1.35;
 const COMB_TINE_WIDTH_RATIO: f32 = 0.035;
 const COMB_TINE_THICKNESS_RATIO: f32 = 0.025;
+const COMB_FREE_LENGTH_RATIO: f32 = 0.72;
+const COMB_TINE_WIDTH_SPACING_RATIO: f32 = 0.82;
 const COMB_TRACK_USABLE_LENGTH_RATIO: f32 = 0.86;
-const DEFAULT_TOOTH_CLEARANCE_RATIO: f32 = 0.82;
+const DEFAULT_TOOTH_CLEARANCE_RATIO: f32 = 0.92;
 const DEFAULT_DEBUG_BIND: &str = "127.0.0.1:4777";
 
 pub fn run() {
@@ -991,17 +992,26 @@ fn spawn_hint_mechanism(
     };
     let tooth_width = cylinder_length * TOOTH_WIDTH_RATIO;
     let tooth_radius = tooth_width
-        .min(cylinder_radius * TOOTH_RADIAL_PROTRUSION_RATIO)
-        .min(tooth_total_height * 0.35)
-        .max(cylinder_radius * 0.004);
+        .min(calibration.track_spacing * 0.32)
+        .min(cylinder_radius * 0.055)
+        .max(cylinder_radius * 0.012);
     let tooth_shank_height = (tooth_total_height - tooth_radius).max(tooth_radius);
     let comb_tine_length = measured_comb_tine_length(model, cylinder_radius);
+    let comb_free_length = comb_tine_length * COMB_FREE_LENGTH_RATIO;
+    let comb_fixed_length = (comb_tine_length - comb_free_length).max(cylinder_radius * 0.035);
     let comb_tine_width = if calibration.track_spacing > f32::EPSILON {
-        calibration.track_spacing * 0.55
+        calibration.track_spacing * COMB_TINE_WIDTH_SPACING_RATIO
     } else {
         cylinder_length * COMB_TINE_WIDTH_RATIO
     };
     let comb_tine_thickness = cylinder_radius * COMB_TINE_THICKNESS_RATIO;
+    let comb_fixed_width = calibration.usable_length
+        + if calibration.track_count > 1 {
+            calibration.track_spacing
+        } else {
+            comb_tine_width
+        };
+    let comb_fixed_thickness = comb_tine_thickness * 2.4;
     let cylinder_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.94, 0.69, 0.23),
         metallic: 0.88,
@@ -1098,25 +1108,38 @@ fn spawn_hint_mechanism(
         commands.entity(cylinder_pivot).add_child(cap);
     }
 
-    let mut notes = hint
-        .events
-        .iter()
-        .map(|event| event.midi_note)
-        .collect::<Vec<_>>();
-    notes.sort_unstable();
-    notes.dedup();
-    for midi_note in notes {
+    let tip_radius = measured_comb_tip_radius(model, cylinder_radius, tooth_total_height);
+    let fixed_position = axis * ((calibration.axial_min + calibration.axial_max) * 0.5)
+        + radial_zero * (tip_radius + comb_free_length + comb_fixed_length * 0.5);
+    let fixed_rotation = basis_rotation(axis, radial_zero, tangent_zero);
+    let fixed = commands
+        .spawn((
+            Name::new("Comb Fixed Base"),
+            ProceduralMechanism,
+            Mesh3d(meshes.add(Cuboid::new(
+                comb_fixed_width,
+                comb_fixed_length,
+                comb_fixed_thickness,
+            ))),
+            MeshMaterial3d(comb_material.clone()),
+            Transform::from_translation(vec3(cylinder_pose.pivot) + fixed_position)
+                .with_rotation(fixed_rotation),
+            Visibility::Visible,
+        ))
+        .id();
+    commands.entity(root).add_child(fixed);
+
+    for midi_note in calibration.lowest_midi..=calibration.highest_midi {
         let axial = note_axial_position(midi_note, &calibration);
-        let tip_radius = measured_comb_tip_radius(model, cylinder_radius, tooth_total_height);
-        let position = axis * axial + radial_zero * (tip_radius + comb_tine_length * 0.5);
+        let position = axis * axial + radial_zero * (tip_radius + comb_free_length * 0.5);
         let rotation = basis_rotation(axis, radial_zero, tangent_zero);
         let entity = commands
             .spawn((
-                Name::new(format!("Comb Tine midi {midi_note}")),
+                Name::new(format!("Comb Free Tine midi {midi_note}")),
                 ProceduralMechanism,
                 Mesh3d(meshes.add(Cuboid::new(
                     comb_tine_width,
-                    comb_tine_length,
+                    comb_free_length,
                     comb_tine_thickness,
                 ))),
                 MeshMaterial3d(comb_material.clone()),
@@ -1306,6 +1329,19 @@ fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) ->
     } else {
         cylinder_radius * TOOTH_HEIGHT_RATIO
     };
+    let tooth_width = cylinder_length * TOOTH_WIDTH_RATIO;
+    let tooth_radius = tooth_width
+        .min(calibration.track_spacing * 0.32)
+        .min(cylinder_radius * 0.055)
+        .max(cylinder_radius * 0.012);
+    let comb_tine_length = measured_comb_tine_length(&model.model, cylinder_radius);
+    let comb_free_length = comb_tine_length * COMB_FREE_LENGTH_RATIO;
+    let comb_fixed_length = (comb_tine_length - comb_free_length).max(cylinder_radius * 0.035);
+    let comb_tine_width = if calibration.track_spacing > f32::EPSILON {
+        calibration.track_spacing * COMB_TINE_WIDTH_SPACING_RATIO
+    } else {
+        cylinder_length * COMB_TINE_WIDTH_RATIO
+    };
     let teeth = mechanism
         .hint
         .events
@@ -1352,8 +1388,22 @@ fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) ->
             "root_radius": model.model.spec().comb.root_radius,
             "clearance": measured_comb_tip_radius(&model.model, cylinder_radius, tooth_total_height) - cylinder_radius,
             "measured_clearance": model.model.spec().comb.clearance,
-            "tine_length": measured_comb_tine_length(&model.model, cylinder_radius),
+            "tine_length": comb_tine_length,
+            "free_tine_length": comb_free_length,
+            "fixed_base_length": comb_fixed_length,
+            "rendered_track_count": calibration.track_count,
             "tooth_tip_radius": cylinder_radius + tooth_total_height,
+            "tooth_cap_radius": tooth_radius,
+            "tooth_radius_to_track_spacing": if calibration.track_spacing > f32::EPSILON {
+                tooth_radius / calibration.track_spacing
+            } else {
+                0.0
+            },
+            "tine_width_to_track_spacing": if calibration.track_spacing > f32::EPSILON {
+                comb_tine_width / calibration.track_spacing
+            } else {
+                0.0
+            },
             "lowest_midi": calibration.lowest_midi,
             "highest_midi": calibration.highest_midi,
             "track_count": calibration.track_count,
