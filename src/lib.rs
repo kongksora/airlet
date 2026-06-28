@@ -1,4 +1,14 @@
-use std::f32::consts::{FRAC_PI_2, PI};
+use std::{
+    f32::consts::{FRAC_PI_2, PI},
+    io::{BufRead, BufReader, Write},
+    net::{TcpListener, TcpStream},
+    sync::{
+        Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
+    thread,
+    time::Duration,
+};
 
 use airlet::{
     audio::RenderedAudio,
@@ -16,6 +26,8 @@ use bevy::{
 };
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, buffer::SamplesBuffer};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 const DEFAULT_MODEL_SPEC: &str = "assets/models/converted/spec.toml";
 const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.60, 0.0);
@@ -27,6 +39,7 @@ const TOOTH_HEIGHT_RATIO: f32 = 0.26;
 const COMB_TINE_LENGTH_RATIO: f32 = 1.35;
 const COMB_TINE_WIDTH_RATIO: f32 = 0.035;
 const COMB_TINE_THICKNESS_RATIO: f32 = 0.025;
+const DEFAULT_DEBUG_BIND: &str = "127.0.0.1:4777";
 
 pub fn run() {
     App::new()
@@ -51,10 +64,12 @@ pub fn run() {
         .insert_resource(load_movable_model())
         .insert_resource(load_mechanism_layout())
         .init_resource::<PlaybackState>()
+        .insert_resource(DebugEndpoint::start_from_env())
         .add_systems(Startup, (setup_scene, setup_audio))
         .add_systems(
             Update,
             (
+                apply_debug_actions,
                 orbit_camera,
                 apply_camera_transform,
                 apply_spotlight_controls,
@@ -134,16 +149,185 @@ struct MechanismResource {
 }
 
 #[derive(Resource)]
+struct DebugEndpoint {
+    bind: Option<String>,
+    requests: Mutex<Receiver<DebugRequestEnvelope>>,
+}
+
+struct DebugRequestEnvelope {
+    action: DebugAction,
+    response: Sender<DebugResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+enum DebugAction {
+    DumpState,
+    DumpMechanism,
+    SetCamera {
+        yaw: Option<f32>,
+        pitch: Option<f32>,
+        radius: Option<f32>,
+    },
+    SetLight {
+        yaw: Option<f32>,
+        pitch: Option<f32>,
+        inner_angle: Option<f32>,
+        outer_angle: Option<f32>,
+        intensity: Option<f32>,
+    },
+    SetLid {
+        t: f32,
+    },
+    SetCylinder {
+        degrees: f32,
+    },
+    SeekTick {
+        tick: i64,
+    },
+    Play,
+    Stop,
+    Screenshot {
+        path: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct DebugResponse {
+    ok: bool,
+    data: Value,
+    error: Option<String>,
+}
+
+impl DebugResponse {
+    fn ok(data: Value) -> Self {
+        Self {
+            ok: true,
+            data,
+            error: None,
+        }
+    }
+
+    fn error(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            data: Value::Null,
+            error: Some(error.into()),
+        }
+    }
+}
+
+impl DebugEndpoint {
+    fn start_from_env() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        if std::env::var("AIRLET_DEBUG")
+            .map(|value| value == "0" || value.eq_ignore_ascii_case("false"))
+            .unwrap_or(false)
+        {
+            return Self {
+                bind: None,
+                requests: Mutex::new(receiver),
+            };
+        }
+
+        let bind = std::env::var("AIRLET_DEBUG_BIND").unwrap_or_else(|_| DEFAULT_DEBUG_BIND.into());
+        let thread_bind = bind.clone();
+        thread::Builder::new()
+            .name("airlet-debug-endpoint".to_string())
+            .spawn(move || run_debug_endpoint(&thread_bind, sender))
+            .expect("failed to spawn airlet debug endpoint");
+        Self {
+            bind: Some(bind),
+            requests: Mutex::new(receiver),
+        }
+    }
+}
+
+fn run_debug_endpoint(bind: &str, sender: Sender<DebugRequestEnvelope>) {
+    let listener = match TcpListener::bind(bind) {
+        Ok(listener) => listener,
+        Err(err) => {
+            error!("failed to bind Airlet debug endpoint {bind}: {err}");
+            return;
+        }
+    };
+    info!("Airlet debug endpoint listening on {bind}");
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => handle_debug_stream(stream, &sender),
+            Err(err) => error!("debug endpoint connection error: {err}"),
+        }
+    }
+}
+
+fn handle_debug_stream(mut stream: TcpStream, sender: &Sender<DebugRequestEnvelope>) {
+    let cloned = match stream.try_clone() {
+        Ok(stream) => stream,
+        Err(err) => {
+            let _ = writeln!(
+                stream,
+                "{}",
+                serde_json::to_string(&DebugResponse::error(format!(
+                    "failed to clone stream: {err}"
+                )))
+                .unwrap()
+            );
+            return;
+        }
+    };
+    let reader = BufReader::new(cloned);
+    for line in reader.lines() {
+        let response = match line {
+            Ok(line) if line.trim().is_empty() => continue,
+            Ok(line) => dispatch_debug_line(&line, sender),
+            Err(err) => DebugResponse::error(format!("failed to read request: {err}")),
+        };
+        let encoded = serde_json::to_string(&response).unwrap_or_else(|err| {
+            serde_json::to_string(&DebugResponse::error(format!(
+                "failed to serialize response: {err}"
+            )))
+            .unwrap()
+        });
+        if writeln!(stream, "{encoded}").is_err() {
+            break;
+        }
+    }
+}
+
+fn dispatch_debug_line(line: &str, sender: &Sender<DebugRequestEnvelope>) -> DebugResponse {
+    let action = match serde_json::from_str::<DebugAction>(line) {
+        Ok(action) => action,
+        Err(err) => return DebugResponse::error(format!("invalid debug action: {err}")),
+    };
+    let (response_sender, response_receiver) = mpsc::channel();
+    if sender
+        .send(DebugRequestEnvelope {
+            action,
+            response: response_sender,
+        })
+        .is_err()
+    {
+        return DebugResponse::error("debug action receiver is unavailable");
+    }
+    response_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_else(|_| DebugResponse::error("debug action timed out"))
+}
+
+#[derive(Resource)]
 pub struct ScreenshotState {
     pub path: Option<String>,
     pub requested: bool,
     pub frames_before_capture: u32,
+    pub exit_after_capture: bool,
 }
 
 impl Default for ScreenshotState {
     fn default() -> Self {
+        let path = std::env::var("AIRLET_SCREENSHOT").ok();
         Self {
-            path: std::env::var("AIRLET_SCREENSHOT").ok(),
+            exit_after_capture: path.is_some(),
+            path,
             requested: false,
             frames_before_capture: 180,
         }
@@ -362,6 +546,136 @@ fn apply_playback_controls(
         PlaybackCommand::Stop => {
             stop_playback(&mut playback);
             controls.playback = PlaybackCommand::Idle;
+        }
+    }
+}
+
+fn apply_debug_actions(
+    endpoint: Res<DebugEndpoint>,
+    mut controls: ResMut<ExhibitControls>,
+    mut playback: ResMut<PlaybackState>,
+    mechanism: Res<MechanismResource>,
+    model: Res<ModelResource>,
+    mut screenshot: ResMut<ScreenshotState>,
+) {
+    let envelopes = {
+        let receiver = endpoint.requests.lock().expect("debug receiver poisoned");
+        let mut envelopes = Vec::new();
+        while let Ok(envelope) = receiver.try_recv() {
+            envelopes.push(envelope);
+        }
+        envelopes
+    };
+    for envelope in envelopes {
+        let response = handle_debug_action(
+            envelope.action,
+            &mut controls,
+            &mut playback,
+            &mechanism,
+            &model,
+            &mut screenshot,
+            endpoint.bind.as_deref(),
+        );
+        let _ = envelope.response.send(response);
+    }
+}
+
+fn handle_debug_action(
+    action: DebugAction,
+    controls: &mut ExhibitControls,
+    playback: &mut PlaybackState,
+    mechanism: &MechanismResource,
+    model: &ModelResource,
+    screenshot: &mut ScreenshotState,
+    debug_bind: Option<&str>,
+) -> DebugResponse {
+    match action {
+        DebugAction::DumpState => DebugResponse::ok(debug_state_json(
+            controls, playback, mechanism, model, debug_bind,
+        )),
+        DebugAction::DumpMechanism => DebugResponse::ok(debug_mechanism_json(mechanism, model)),
+        DebugAction::SetCamera { yaw, pitch, radius } => {
+            if let Some(yaw) = yaw {
+                controls.yaw = yaw;
+            }
+            if let Some(pitch) = pitch {
+                controls.pitch = pitch.clamp(0.08, 1.25);
+            }
+            if let Some(radius) = radius {
+                controls.radius = radius.clamp(3.4, 12.0);
+            }
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::SetLight {
+            yaw,
+            pitch,
+            inner_angle,
+            outer_angle,
+            intensity,
+        } => {
+            if let Some(yaw) = yaw {
+                controls.light_yaw = yaw;
+            }
+            if let Some(pitch) = pitch {
+                controls.light_pitch = pitch.clamp(0.25, 1.45);
+            }
+            if let Some(outer_angle) = outer_angle {
+                controls.spot_outer_angle = outer_angle.clamp(0.22, 1.35);
+            }
+            if let Some(inner_angle) = inner_angle {
+                controls.spot_inner_angle =
+                    inner_angle.clamp(0.08, controls.spot_outer_angle - 0.02);
+            }
+            if let Some(intensity) = intensity {
+                controls.spot_intensity = intensity.clamp(5_000.0, 1_200_000.0);
+            }
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::SetLid { t } => {
+            controls.lid_t = t.clamp(0.0, 1.0);
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::SetCylinder { degrees } => {
+            playback.is_playing = false;
+            controls.cylinder_spin = false;
+            controls.cylinder_degrees = degrees;
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::SeekTick { tick } => {
+            playback.is_playing = false;
+            controls.cylinder_spin = false;
+            playback.elapsed_seconds = tick_to_seconds(tick, mechanism);
+            controls.cylinder_degrees = tick_to_cylinder_degrees(tick, mechanism);
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::Play => {
+            controls.playback = PlaybackCommand::Start;
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::Stop => {
+            controls.playback = PlaybackCommand::Stop;
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::Screenshot { path } => {
+            screenshot.path = Some(path.clone());
+            screenshot.requested = false;
+            screenshot.frames_before_capture = 2;
+            screenshot.exit_after_capture = false;
+            DebugResponse::ok(json!({ "screenshot": { "path": path, "requested": true } }))
         }
     }
 }
@@ -752,7 +1066,7 @@ fn exit_after_screenshot(state: Res<ScreenshotState>, mut exit: MessageWriter<Ap
     let Some(path) = &state.path else {
         return;
     };
-    if state.requested && std::path::Path::new(path).exists() {
+    if state.exit_after_capture && state.requested && std::path::Path::new(path).exists() {
         exit.write(AppExit::Success);
     }
 }
@@ -825,9 +1139,105 @@ fn spotlight_transform(controls: &ExhibitControls) -> Transform {
 fn synced_cylinder_degrees(elapsed_seconds: f32, mechanism: &MechanismResource) -> f32 {
     let elapsed_millis = (elapsed_seconds.max(0.0) * 1000.0) as i64;
     let tick = elapsed_millis * PPQ / mechanism.quarter_millis as i64;
+    tick_to_cylinder_degrees(tick, mechanism)
+}
+
+fn tick_to_cylinder_degrees(tick: i64, mechanism: &MechanismResource) -> f32 {
     let wrapped =
         tick.rem_euclid(mechanism.ticks_per_turn) as f32 / mechanism.ticks_per_turn as f32;
     -wrapped * 360.0
+}
+
+fn tick_to_seconds(tick: i64, mechanism: &MechanismResource) -> f32 {
+    tick as f32 * mechanism.quarter_millis as f32 / PPQ as f32 / 1000.0
+}
+
+fn seconds_to_tick(seconds: f32, mechanism: &MechanismResource) -> i64 {
+    (seconds.max(0.0) * 1000.0 * PPQ as f32 / mechanism.quarter_millis as f32).round() as i64
+}
+
+fn debug_state_json(
+    controls: &ExhibitControls,
+    playback: &PlaybackState,
+    mechanism: &MechanismResource,
+    model: &ModelResource,
+    debug_bind: Option<&str>,
+) -> Value {
+    let tick = seconds_to_tick(playback.elapsed_seconds, mechanism);
+    json!({
+        "debug": {
+            "bind": debug_bind,
+        },
+        "camera": {
+            "yaw": controls.yaw,
+            "pitch": controls.pitch,
+            "radius": controls.radius,
+        },
+        "light": {
+            "yaw": controls.light_yaw,
+            "pitch": controls.light_pitch,
+            "distance": controls.light_distance,
+            "inner_angle": controls.spot_inner_angle,
+            "outer_angle": controls.spot_outer_angle,
+            "intensity": controls.spot_intensity,
+        },
+        "rig": {
+            "lid_t": controls.lid_t,
+            "cylinder_degrees": controls.cylinder_degrees,
+            "cylinder_spin": controls.cylinder_spin,
+            "cylinder_radius": model.model.spec().cylinder.radius,
+            "cylinder_length": model.model.spec().cylinder.length,
+        },
+        "playback": {
+            "is_playing": playback.is_playing,
+            "elapsed_seconds": playback.elapsed_seconds,
+            "tick": tick,
+            "phase_degrees": tick_to_cylinder_degrees(tick, mechanism),
+            "pending_command": format!("{:?}", controls.playback),
+            "last_error": playback.last_error,
+        },
+        "mechanism": {
+            "tooth_count": mechanism.hint.events.len(),
+            "diagnostic_count": mechanism.hint.diagnostics.len(),
+            "ticks_per_turn": mechanism.ticks_per_turn,
+            "quarter_millis": mechanism.quarter_millis,
+        }
+    })
+}
+
+fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) -> Value {
+    let teeth = mechanism
+        .hint
+        .events
+        .iter()
+        .take(64)
+        .map(|event| {
+            json!({
+                "midi_note": event.midi_note,
+                "onset_tick": event.onset_tick,
+                "angle_rad": event.angle_rad,
+                "axial_position": event.axial_position,
+                "velocity_hint": event.velocity_hint,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "cylinder": {
+            "radius": model.model.spec().cylinder.radius,
+            "length": model.model.spec().cylinder.length,
+            "pivot": model.model.spec().cylinder.pivot,
+            "axis": model.model.spec().cylinder.axis,
+            "ticks_per_turn": mechanism.ticks_per_turn,
+        },
+        "hint": {
+            "source_radius": mechanism.hint.cylinder_radius,
+            "source_length": mechanism.hint.cylinder_length,
+            "track_spacing": mechanism.hint.track_spacing,
+            "tooth_count": mechanism.hint.events.len(),
+            "teeth_preview": teeth,
+            "diagnostics": mechanism.hint.diagnostics,
+        }
+    })
 }
 
 fn load_movable_model() -> ModelResource {

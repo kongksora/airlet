@@ -335,6 +335,28 @@ MCP only after the state and action vocabulary is stable. The immediate useful
 actions are screenshot capture, camera/light controls, lid/cylinder controls,
 playback start/stop, and structured mechanism-state dumps.
 
+### Airlet Debug Action Surface And MCP Path
+
+MCP should be an adapter over Airlet's own debug/action vocabulary, not the first
+place where app state semantics are invented. The first implementation should be
+a local-only JSON action endpoint that can be driven by scripts and later wrapped
+by an MCP server.
+
+Implementation checklist:
+
+- [x] Add a local debug endpoint bound to `127.0.0.1`.
+- [x] Support JSON actions: `dump_state`, `dump_mechanism`,
+  `set_camera`, `set_light`, `set_lid`, `set_cylinder`, `seek_tick`,
+  `play`, `stop`, and `screenshot`.
+- [x] Route debug actions through the same `ExhibitControls`,
+  `PlaybackState`, and screenshot resources used by egui.
+- [x] Return structured state including playback phase, cylinder angle, model
+  cylinder dimensions, and mechanism hint counts.
+- [x] Add a lightweight client/smoke path before building a dedicated MCP
+  server.
+- [x] Keep the endpoint opt-out/opt-in safe for local development and document
+  the future MCP adapter boundary.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the

@@ -134,6 +134,8 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "rodio",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
