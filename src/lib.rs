@@ -95,9 +95,9 @@ pub fn run() {
                 orbit_camera,
                 apply_camera_transform,
                 apply_spotlight_controls,
+                apply_playback_controls,
                 apply_rig_controls,
                 animate_comb_tines,
-                apply_playback_controls,
                 spawn_spec_model,
                 report_model_load,
                 auto_screenshot,
@@ -122,6 +122,8 @@ pub struct ExhibitControls {
     pub spot_outer_angle: f32,
     pub spot_intensity: f32,
     pub volume: f32,
+    pub playback_rate: f32,
+    pub seek_seconds: Option<f32>,
     pub playback: PlaybackCommand,
     pub lid_t: f32,
     pub cylinder_degrees: f32,
@@ -143,6 +145,8 @@ impl Default for ExhibitControls {
             spot_outer_angle: 0.42,
             spot_intensity: 1_700_000.0,
             volume: 0.75,
+            playback_rate: 1.0,
+            seek_seconds: None,
             playback: PlaybackCommand::Idle,
             lid_t: env_f32("AIRLET_LID_T", 0.0).clamp(0.0, 1.0),
             cylinder_degrees: env_f32("AIRLET_CYLINDER_DEGREES", 0.0),
@@ -155,7 +159,8 @@ impl Default for ExhibitControls {
 pub enum PlaybackCommand {
     Idle,
     Start,
-    Stop,
+    Pause,
+    Reset,
 }
 
 #[derive(Resource, Default)]
@@ -273,7 +278,9 @@ enum DebugAction {
         tick: i64,
     },
     Play,
+    Pause,
     Stop,
+    Reset,
     Screenshot {
         path: String,
     },
@@ -651,10 +658,22 @@ fn apply_spotlight_controls(
 fn apply_playback_controls(
     mut controls: ResMut<ExhibitControls>,
     mut playback: ResMut<PlaybackState>,
+    mechanism: Res<MechanismResource>,
 ) {
     let volume = controls.volume;
+    let rate = controls.playback_rate.clamp(0.25, 2.0);
+    controls.playback_rate = rate;
+    if let Some(seek_seconds) = controls.seek_seconds.take() {
+        let restart = playback.is_playing;
+        seek_playback(&mut playback, seek_seconds);
+        controls.cylinder_degrees = synced_cylinder_degrees(playback.elapsed_seconds, &mechanism);
+        if restart {
+            start_playback(&mut playback, volume, rate);
+        }
+    }
     if let Some(player) = &playback.player {
         player.set_volume(volume);
+        player.set_speed(rate);
         if player.empty() {
             playback.player = None;
             playback.is_playing = false;
@@ -664,11 +683,17 @@ fn apply_playback_controls(
     match controls.playback {
         PlaybackCommand::Idle => {}
         PlaybackCommand::Start => {
-            start_playback(&mut playback, volume);
+            start_playback(&mut playback, volume, rate);
             controls.playback = PlaybackCommand::Idle;
         }
-        PlaybackCommand::Stop => {
-            stop_playback(&mut playback);
+        PlaybackCommand::Pause => {
+            pause_playback(&mut playback);
+            controls.playback = PlaybackCommand::Idle;
+        }
+        PlaybackCommand::Reset => {
+            reset_playback(&mut playback);
+            controls.cylinder_degrees =
+                synced_cylinder_degrees(playback.elapsed_seconds, &mechanism);
             controls.playback = PlaybackCommand::Idle;
         }
     }
@@ -802,8 +827,20 @@ fn handle_debug_action(
                 controls, playback, mechanism, model, debug_bind,
             ))
         }
+        DebugAction::Pause => {
+            controls.playback = PlaybackCommand::Pause;
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
         DebugAction::Stop => {
-            controls.playback = PlaybackCommand::Stop;
+            controls.playback = PlaybackCommand::Pause;
+            DebugResponse::ok(debug_state_json(
+                controls, playback, mechanism, model, debug_bind,
+            ))
+        }
+        DebugAction::Reset => {
+            controls.playback = PlaybackCommand::Reset;
             DebugResponse::ok(debug_state_json(
                 controls, playback, mechanism, model, debug_bind,
             ))
@@ -834,16 +871,21 @@ fn control_panel(
                 if ui.button("Start").clicked() {
                     controls.playback = PlaybackCommand::Start;
                 }
-                if ui.button("Stop").clicked() {
-                    controls.playback = PlaybackCommand::Stop;
+                if ui.button("Pause").clicked() {
+                    controls.playback = PlaybackCommand::Pause;
+                }
+                if ui.button("Reset").clicked() {
+                    controls.playback = PlaybackCommand::Reset;
                 }
             });
             ui.add(egui::Slider::new(&mut controls.volume, 0.0..=1.5).text("Volume"));
+            ui.add(egui::Slider::new(&mut controls.playback_rate, 0.25..=2.0).text("Rate"));
             ui.label(if playback.is_playing {
                 "Status: Playing"
             } else {
-                "Status: Stopped"
+                "Status: Paused"
             });
+            draw_audio_timeline(ui, &mut controls, &playback);
             if let Some(error) = &playback.last_error {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             }
@@ -885,6 +927,85 @@ fn control_panel(
             ui.checkbox(&mut controls.cylinder_spin, "Cylinder spin");
         });
     Ok(())
+}
+
+fn draw_audio_timeline(
+    ui: &mut egui::Ui,
+    controls: &mut ExhibitControls,
+    playback: &PlaybackState,
+) {
+    let duration = playback_duration_seconds(playback);
+    if duration <= f32::EPSILON {
+        ui.label("Timeline: unavailable");
+        return;
+    }
+
+    ui.label(format!(
+        "{} / {}",
+        format_seconds(playback.elapsed_seconds),
+        format_seconds(duration)
+    ));
+    let timeline_width = ui.available_width().clamp(220.0, 260.0);
+    let desired_size = egui::vec2(timeline_width, 74.0);
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, egui::Color32::from_gray(28));
+    painter.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, egui::Color32::from_gray(76)),
+        egui::StrokeKind::Inside,
+    );
+
+    if let Some(audio) = playback.audio.as_ref() {
+        let samples = audio.samples();
+        let channels = audio.channels().get() as usize;
+        let columns = rect.width().round().max(1.0) as usize;
+        let frames = samples.len() / channels.max(1);
+        if frames > 0 {
+            let center_y = rect.center().y;
+            let half_height = rect.height() * 0.42;
+            for column in 0..columns {
+                let start_frame = column * frames / columns;
+                let end_frame = ((column + 1) * frames / columns)
+                    .min(frames)
+                    .max(start_frame + 1);
+                let mut peak = 0.0_f32;
+                for frame in start_frame..end_frame {
+                    for channel in 0..channels {
+                        let index = frame * channels + channel;
+                        if let Some(sample) = samples.get(index) {
+                            peak = peak.max(sample.abs());
+                        }
+                    }
+                }
+                let x = rect.left() + column as f32 / columns.max(1) as f32 * rect.width();
+                let y0 = center_y - peak * half_height;
+                let y1 = center_y + peak * half_height;
+                painter.line_segment(
+                    [egui::pos2(x, y0), egui::pos2(x, y1)],
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(135, 178, 178)),
+                );
+            }
+        }
+    }
+
+    let progress = (playback.elapsed_seconds / duration).clamp(0.0, 1.0);
+    let cursor_x = rect.left() + progress * rect.width();
+    painter.line_segment(
+        [
+            egui::pos2(cursor_x, rect.top()),
+            egui::pos2(cursor_x, rect.bottom()),
+        ],
+        egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 206, 96)),
+    );
+
+    if (response.dragged() || response.clicked())
+        && let Some(position) = response.interact_pointer_pos()
+    {
+        let seek = ((position.x - rect.left()) / rect.width()).clamp(0.0, 1.0) * duration;
+        controls.seek_seconds = Some(seek);
+    }
 }
 
 fn spawn_spec_model(
@@ -1033,7 +1154,12 @@ fn apply_rig_controls(
 ) {
     model.model.set_lid_t(controls.lid_t);
     if playback.is_playing {
-        playback.elapsed_seconds += time.delta_secs();
+        let duration = playback_duration_seconds(&playback);
+        playback.elapsed_seconds =
+            (playback.elapsed_seconds + time.delta_secs() * controls.playback_rate).min(duration);
+        if playback.elapsed_seconds >= duration {
+            playback.is_playing = false;
+        }
         controls.cylinder_degrees = synced_cylinder_degrees(playback.elapsed_seconds, &mechanism);
         model.model.set_cylinder_degrees(controls.cylinder_degrees);
         model.model.set_cylinder_spin(false);
@@ -1397,7 +1523,7 @@ fn exit_after_screenshot(state: Res<ScreenshotState>, mut exit: MessageWriter<Ap
     }
 }
 
-fn start_playback(playback: &mut PlaybackState, volume: f32) {
+fn start_playback(playback: &mut PlaybackState, volume: f32, rate: f32) {
     let Some(device) = playback.device.as_ref() else {
         playback.last_error = Some("audio device is unavailable".to_string());
         playback.is_playing = false;
@@ -1413,25 +1539,69 @@ fn start_playback(playback: &mut PlaybackState, volume: f32) {
         player.stop();
     }
 
+    let duration = playback_duration_seconds(playback);
+    if playback.elapsed_seconds >= duration {
+        playback.elapsed_seconds = 0.0;
+    }
+    let start_sample = playback_start_sample(playback);
     let player = Player::connect_new(device.mixer());
     player.set_volume(volume);
+    player.set_speed(rate);
     player.append(SamplesBuffer::new(
         audio.channels(),
         audio.sample_rate(),
-        audio.samples().to_vec(),
+        audio.samples()[start_sample..].to_vec(),
     ));
     playback.player = Some(player);
     playback.is_playing = true;
-    playback.elapsed_seconds = 0.0;
+    playback.elapsed_seconds = playback
+        .elapsed_seconds
+        .clamp(0.0, playback_duration_seconds(playback));
     playback.last_error = None;
 }
 
-fn stop_playback(playback: &mut PlaybackState) {
+fn pause_playback(playback: &mut PlaybackState) {
     if let Some(player) = playback.player.take() {
         player.stop();
     }
     playback.is_playing = false;
+}
+
+fn reset_playback(playback: &mut PlaybackState) {
+    pause_playback(playback);
     playback.elapsed_seconds = 0.0;
+}
+
+fn seek_playback(playback: &mut PlaybackState, seconds: f32) {
+    pause_playback(playback);
+    playback.elapsed_seconds = seconds.clamp(0.0, playback_duration_seconds(playback));
+}
+
+fn playback_duration_seconds(playback: &PlaybackState) -> f32 {
+    playback
+        .audio
+        .as_ref()
+        .map(|audio| audio.duration().as_secs_f32())
+        .unwrap_or(0.0)
+}
+
+fn playback_start_sample(playback: &PlaybackState) -> usize {
+    let Some(audio) = playback.audio.as_ref() else {
+        return 0;
+    };
+    let channels = audio.channels().get() as usize;
+    let sample_rate = audio.sample_rate().get() as f32;
+    let frame = (playback.elapsed_seconds.max(0.0) * sample_rate).round() as usize;
+    (frame * channels).min(audio.samples().len())
+}
+
+fn format_seconds(seconds: f32) -> String {
+    let seconds = seconds.max(0.0);
+    let whole = seconds.floor() as u32;
+    let minutes = whole / 60;
+    let seconds_part = whole % 60;
+    let tenths = ((seconds - whole as f32) * 10.0).floor() as u32;
+    format!("{minutes}:{seconds_part:02}.{tenths}")
 }
 
 fn camera_transform(controls: &ExhibitControls) -> Transform {
@@ -1700,6 +1870,8 @@ fn debug_state_json(
         "playback": {
             "is_playing": playback.is_playing,
             "elapsed_seconds": playback.elapsed_seconds,
+            "duration_seconds": playback_duration_seconds(playback),
+            "rate": controls.playback_rate,
             "tick": tick,
             "phase_degrees": tick_to_cylinder_degrees(tick, mechanism),
             "pending_command": format!("{:?}", controls.playback),
@@ -2474,5 +2646,20 @@ mod tests {
         assert_eq!(event.max_deflection_rad, 0.0);
         assert_eq!(event.vibration_ticks, 0);
         assert!(comb_tine_sample(event.midi_note, event.release_tick, None, &mechanism).is_none());
+    }
+
+    #[test]
+    fn playback_seek_maps_to_channel_aligned_sample_index() {
+        let playback = PlaybackState {
+            audio: Some(RenderedAudio::mono(
+                std::num::NonZero::new(10).unwrap(),
+                vec![0.0; 100],
+            )),
+            elapsed_seconds: 2.4,
+            ..default()
+        };
+
+        assert_eq!(playback_start_sample(&playback), 24);
+        assert_eq!(format_seconds(65.4), "1:05.4");
     }
 }
