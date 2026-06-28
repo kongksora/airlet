@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     f32::consts::{FRAC_PI_2, PI},
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
@@ -14,7 +15,7 @@ use airlet::{
     audio::RenderedAudio,
     defaults,
     mechanism::{MechanismLayoutHint, MechanismPlanner, ToothHint},
-    score::PPQ,
+    score::{PPQ, Timeline},
 };
 use airlet_model::{MeshGroup, ModelSpec, MovableMusicBoxModel, PivotPose};
 use bevy::{
@@ -158,6 +159,27 @@ struct MechanismCalibration {
     usable_length: f32,
     side_margin: f32,
     track_spacing: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TimingGroup {
+    key_tick: i64,
+    events: Vec<TimingEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TimingEvent {
+    onset_tick: i64,
+    midi_note: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TimingValidation {
+    ticks_per_turn: i64,
+    same_onset_groups: Vec<TimingGroup>,
+    same_phase_groups: Vec<TimingGroup>,
+    same_onset_group_count: usize,
+    same_phase_group_count: usize,
 }
 
 #[derive(Resource)]
@@ -1223,6 +1245,7 @@ fn debug_state_json(
 fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) -> Value {
     let cylinder_length = model.model.spec().cylinder.length.max(0.01);
     let calibration = mechanism_calibration(&mechanism.hint, cylinder_length);
+    let timing = timing_validation(&mechanism.hint, mechanism.ticks_per_turn);
     let teeth = mechanism
         .hint
         .events
@@ -1259,6 +1282,7 @@ fn debug_mechanism_json(mechanism: &MechanismResource, model: &ModelResource) ->
             "ticks_per_turn": mechanism.ticks_per_turn,
         },
         "calibration": calibration,
+        "timing": timing,
         "comb": {
             "lowest_midi": calibration.lowest_midi,
             "highest_midi": calibration.highest_midi,
@@ -1290,6 +1314,7 @@ fn load_movable_model() -> ModelResource {
 fn load_mechanism_layout() -> MechanismResource {
     let plan = defaults::air_intro_plan();
     let timeline = plan.composed_score().expand();
+    let ticks_per_turn = timeline_end_tick(&timeline).max(1);
     let note_range = timeline
         .events
         .iter()
@@ -1306,13 +1331,23 @@ fn load_mechanism_layout() -> MechanismResource {
     planner.highest_midi = highest_midi.max(lowest_midi);
     planner.track_spacing = 1.0;
     planner.cylinder_length = track_count.max(1) as f32;
-    let ticks_per_turn = planner.ticks_per_turn;
+    planner.ticks_per_turn = ticks_per_turn;
     let hint = planner.plan(&timeline);
     MechanismResource {
         hint,
         ticks_per_turn,
         quarter_millis: timeline.tempo.ticks_to_millis(PPQ),
     }
+}
+
+fn timeline_end_tick(timeline: &Timeline) -> i64 {
+    timeline
+        .events
+        .iter()
+        .filter(|event| event.midi_note > 0)
+        .map(|event| event.onset.0 + event.duration.ticks())
+        .max()
+        .unwrap_or(PPQ * 4)
 }
 
 fn tooth_transform(
@@ -1375,6 +1410,53 @@ fn note_axial_position(midi_note: i32, calibration: &MechanismCalibration) -> f3
         let track = track_index(midi_note, calibration).min(calibration.track_count - 1);
         -calibration.usable_length * 0.5 + track as f32 * calibration.track_spacing
     }
+}
+
+fn timing_validation(hint: &MechanismLayoutHint, ticks_per_turn: i64) -> TimingValidation {
+    let same_onset_groups = grouped_timing_events(hint.events.iter().map(|event| {
+        (
+            event.onset_tick,
+            TimingEvent {
+                onset_tick: event.onset_tick,
+                midi_note: event.midi_note,
+            },
+        )
+    }));
+    let same_phase_groups = grouped_timing_events(hint.events.iter().map(|event| {
+        (
+            event.onset_tick.rem_euclid(ticks_per_turn),
+            TimingEvent {
+                onset_tick: event.onset_tick,
+                midi_note: event.midi_note,
+            },
+        )
+    }));
+    TimingValidation {
+        ticks_per_turn,
+        same_onset_group_count: same_onset_groups.len(),
+        same_phase_group_count: same_phase_groups.len(),
+        same_onset_groups,
+        same_phase_groups,
+    }
+}
+
+fn grouped_timing_events(
+    keyed_events: impl IntoIterator<Item = (i64, TimingEvent)>,
+) -> Vec<TimingGroup> {
+    let mut groups = BTreeMap::<i64, Vec<TimingEvent>>::new();
+    for (key_tick, event) in keyed_events {
+        groups.entry(key_tick).or_default().push(event);
+    }
+    groups
+        .into_iter()
+        .filter_map(|(key_tick, events)| {
+            if events.len() > 1 {
+                Some(TimingGroup { key_tick, events })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn cylinder_radial_frame(axis: Vec3) -> (Vec3, Vec3) {
@@ -1499,5 +1581,29 @@ mod tests {
         assert!((note_axial_position(60, &calibration) + 4.3).abs() < 1e-5);
         assert!(note_axial_position(62, &calibration).abs() < 1e-5);
         assert!((note_axial_position(64, &calibration) - 4.3).abs() < 1e-5);
+    }
+
+    #[test]
+    fn default_mechanism_uses_full_song_turn_without_phase_collisions() {
+        let mechanism = load_mechanism_layout();
+        let timing = timing_validation(&mechanism.hint, mechanism.ticks_per_turn);
+
+        assert_eq!(mechanism.ticks_per_turn, 29_760);
+        assert_eq!(timing.same_onset_group_count, 0);
+        assert_eq!(timing.same_phase_group_count, 0);
+        assert!(
+            mechanism
+                .hint
+                .diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("outside comb range"))
+        );
+        assert!(
+            mechanism
+                .hint
+                .diagnostics
+                .iter()
+                .all(|diagnostic| !diagnostic.message.contains("dense teeth near angle"))
+        );
     }
 }

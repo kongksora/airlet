@@ -411,6 +411,33 @@ Full-model material assets:
   close-up gift renders. For glTF export, pack ORM as occlusion/roughness/
   metallic channels when possible. HDRI should be `.hdr` or `.exr`.
 
+### Cylinder Time Mapping Correction
+
+The first hint-driven cylinder pass used `PPQ * 4` as `ticks_per_turn`, which
+folded every measure onto the same cylinder angle. That made different playback
+times appear as simultaneous teeth. The current demo is a short, single-turn
+mechanism: one full score timeline maps to one cylinder revolution.
+
+Implementation checklist:
+
+- [x] Derive `ticks_per_turn` from the full timeline end tick.
+- [x] Use the derived value in both `MechanismPlanner` and playback phase sync.
+- [x] Add a validation report for same-onset groups and same-phase groups.
+- [x] Require zero same-phase collisions when the score has no same-onset
+  chords.
+- [x] Expose the timing validation in `dump_mechanism`.
+- [x] Test the default Air intro has no folded phase collisions.
+- [x] Validate with the running app through the debug endpoint.
+
+Validation result:
+
+- `ticks_per_turn`: `29760`, equal to `last_onset + last_duration`.
+- `same_onset_group_count`: `0`.
+- `same_phase_group_count`: `0`.
+- mechanism diagnostics: `0`.
+- Runtime endpoint validation file:
+  `target/airlet-time-mapping-debug.json`.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the
