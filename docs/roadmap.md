@@ -543,6 +543,39 @@ Validation result:
 - Screenshot: `target/airlet-dense-comb-shot.png`, `2560x1568`, mean brightness
   `0.451635`.
 
+### Comb Tine Release Animation And Audio Alignment
+
+The visual mechanism must not play a note when the tooth first touches or lifts
+the tine. The note starts when the tine is released. Therefore each mechanism
+event needs two visual phases:
+
+- pre-release pluck: before `onset_tick`, the passing tooth bends the tine;
+- release/vibration: at exactly `onset_tick`, the tine is released and audio
+  begins.
+
+Implementation checklist:
+
+- [x] Convert free comb tines into pivoted entities with a fixed root and child
+  playable tine body.
+- [x] Add a per-track animation component keyed by MIDI note.
+- [x] Animate pre-release tine bend during `onset_tick - pluck_window..onset_tick`.
+- [x] Start damped vibration at exactly `onset_tick`.
+- [x] Keep audio onset and visual release tied to the same timeline tick.
+- [x] Expose release-alignment debug data in `dump_mechanism`.
+- [x] Add tests proving release tick equals note onset tick.
+- [x] Runtime-validate with MCP/debug dump and screenshot.
+
+Validation notes:
+
+- `target/airlet-comb-animation-debug.json` reports `pluck_window_ticks = 120`
+  and `vibration_ticks = 1920`.
+- The MCP `release_alignment_preview` rows all satisfy
+  `release_tick == onset_tick` and `pluck_start_tick < release_tick`.
+- Screenshots:
+  `target/airlet-comb-animation-shot.png` (closed, 1280x800, mean 0.276168)
+  and `target/airlet-comb-animation-open-shot.png` (open, 1280x800,
+  mean 0.372433).
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the
