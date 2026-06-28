@@ -290,6 +290,28 @@ Implementation checklist:
 - [x] Regenerate and apply `assets/models/converted/spec.toml`.
 - [x] Screenshot-validate open-lid hinges and cylinder 90/180 degree poses.
 
+### Hint-Driven Mechanism And Playback Sync
+
+The music-box performance should not render a decorative cylinder independently
+from the audio. `MechanismLayoutHint` is the shared contract: a tooth's angular
+position and the playback clock must be derived from the same timeline tick, so
+the visual strike and generated sound onset are phase-locked.
+
+Implementation checklist:
+
+- [x] Replace the tan platform with a pure white circular display plinth.
+- [x] Reduce ambient/fill lighting and raise the visual role of the controllable
+  spotlight.
+- [x] Generate a procedural cylinder tooth mesh from `MechanismLayoutHint`.
+- [x] Generate a procedural comb/tooth-line model from the same note tracks.
+- [x] Use one playback clock to drive both audio playback state and cylinder
+  angle.
+- [x] Map `onset_tick` to cylinder angle with the same ticks-per-turn convention
+  used by `MechanismPlanner`.
+- [x] Validate that starting playback resets cylinder phase, so tooth contact
+  and sound onset are aligned by construction.
+- [x] Screenshot-validate the updated stage and mechanism model.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the

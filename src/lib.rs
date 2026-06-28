@@ -1,6 +1,11 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 
-use airlet::{audio::RenderedAudio, defaults};
+use airlet::{
+    audio::RenderedAudio,
+    defaults,
+    mechanism::{MechanismLayoutHint, MechanismPlanner, ToothHint},
+    score::PPQ,
+};
 use airlet_model::{MeshGroup, ModelSpec, MovableMusicBoxModel, PivotPose};
 use bevy::{
     gltf::{Gltf, GltfMaterial, GltfMesh, GltfNode},
@@ -13,9 +18,17 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player, buffer::SamplesBuffer};
 
 const DEFAULT_MODEL_SPEC: &str = "assets/models/converted/spec.toml";
-const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.74, 0.0);
-const PLATFORM_TOP_Y: f32 = 0.14;
+const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.60, 0.0);
+const PLATFORM_TOP_Y: f32 = 0.0;
 const MODEL_SCALE: f32 = 1.8;
+const PROCEDURAL_CYLINDER_RADIUS: f32 = 0.074;
+const PROCEDURAL_CYLINDER_LENGTH: f32 = 0.40;
+const TOOTH_RADIAL_PROTRUSION: f32 = 0.018;
+const TOOTH_WIDTH: f32 = 0.010;
+const TOOTH_HEIGHT: f32 = 0.028;
+const COMB_TINE_LENGTH: f32 = 0.18;
+const COMB_TINE_WIDTH: f32 = 0.006;
+const COMB_TINE_THICKNESS: f32 = 0.004;
 
 pub fn run() {
     App::new()
@@ -29,15 +42,16 @@ pub fn run() {
             ..default()
         }))
         .add_plugins(EguiPlugin::default())
-        .insert_resource(ClearColor(Color::srgb(0.12, 0.115, 0.105)))
+        .insert_resource(ClearColor(Color::srgb(0.035, 0.034, 0.032)))
         .insert_resource(GlobalAmbientLight {
-            color: Color::srgb(1.0, 0.92, 0.78),
-            brightness: 650.0,
+            color: Color::srgb(0.86, 0.82, 0.76),
+            brightness: 95.0,
             ..default()
         })
         .init_resource::<ExhibitControls>()
         .init_resource::<ScreenshotState>()
         .insert_resource(load_movable_model())
+        .insert_resource(load_mechanism_layout())
         .init_resource::<PlaybackState>()
         .add_systems(Startup, (setup_scene, setup_audio))
         .add_systems(
@@ -85,9 +99,9 @@ impl Default for ExhibitControls {
             light_yaw: -0.45,
             light_pitch: 1.0,
             light_distance: 5.2,
-            spot_inner_angle: 0.55,
-            spot_outer_angle: 1.1,
-            spot_intensity: 650_000.0,
+            spot_inner_angle: 0.34,
+            spot_outer_angle: 0.78,
+            spot_intensity: 1_050_000.0,
             volume: 0.75,
             playback: PlaybackCommand::Idle,
             lid_t: env_f32("AIRLET_LID_T", 0.0).clamp(0.0, 1.0),
@@ -110,7 +124,15 @@ pub struct PlaybackState {
     pub player: Option<Player>,
     pub audio: Option<RenderedAudio>,
     pub is_playing: bool,
+    pub elapsed_seconds: f32,
     pub last_error: Option<String>,
+}
+
+#[derive(Resource)]
+struct MechanismResource {
+    hint: MechanismLayoutHint,
+    ticks_per_turn: i64,
+    quarter_millis: u64,
 }
 
 #[derive(Resource)]
@@ -141,6 +163,9 @@ struct LidPivot;
 
 #[derive(Component)]
 struct CylinderPivot;
+
+#[derive(Component)]
+struct ProceduralMechanism;
 
 #[derive(Resource)]
 struct ModelGltfHandle(Handle<Gltf>);
@@ -193,33 +218,32 @@ fn setup_scene(
 
     commands.spawn((
         Name::new("Exhibit Platform"),
-        Mesh3d(meshes.add(Cylinder::new(2.15, 0.28))),
+        Mesh3d(meshes.add(Cylinder::new(2.25, 0.24).mesh().resolution(128))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.86, 0.73, 0.55),
-            perceptual_roughness: 0.82,
-            metallic: 0.05,
-            unlit: true,
+            base_color: Color::WHITE,
+            perceptual_roughness: 0.72,
+            metallic: 0.0,
             ..default()
         })),
-        Transform::from_xyz(0.0, -0.16, 0.0),
+        Transform::from_xyz(0.0, -0.12, 0.0),
     ));
 
     commands.spawn((
         Name::new("Stage Floor"),
         Mesh3d(meshes.add(Plane3d::default().mesh().size(14.0, 14.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.50, 0.45, 0.36),
+            base_color: Color::srgb(0.055, 0.052, 0.048),
             perceptual_roughness: 0.95,
             cull_mode: None,
-            unlit: true,
             ..default()
         })),
+        Transform::from_xyz(0.0, -0.245, 0.0),
     ));
 
     commands.spawn((
         Name::new("Key Directional Light"),
         DirectionalLight {
-            illuminance: 18_000.0,
+            illuminance: 1_500.0,
             shadow_maps_enabled: true,
             ..default()
         },
@@ -229,7 +253,7 @@ fn setup_scene(
     commands.spawn((
         Name::new("Fill Light"),
         PointLight {
-            intensity: 22_000.0,
+            intensity: 1_800.0,
             range: 16.0,
             shadow_maps_enabled: false,
             ..default()
@@ -240,7 +264,7 @@ fn setup_scene(
     commands.spawn((
         Name::new("Rim Light"),
         PointLight {
-            intensity: 14_000.0,
+            intensity: 2_200.0,
             range: 12.0,
             color: Color::srgb(0.78, 0.88, 1.0),
             shadow_maps_enabled: false,
@@ -411,10 +435,12 @@ fn spawn_spec_model(
     mut commands: Commands,
     handle: Option<Res<ModelGltfHandle>>,
     model: Res<ModelResource>,
+    mechanism: Res<MechanismResource>,
     gltfs: Res<Assets<Gltf>>,
     nodes: Res<Assets<GltfNode>>,
     meshes: Res<Assets<GltfMesh>>,
     gltf_materials: Res<Assets<GltfMaterial>>,
+    mut render_meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut state: ResMut<ModelSpawnState>,
 ) {
@@ -496,7 +522,7 @@ fn spawn_spec_model(
         let parent = match primitive.group {
             MeshGroup::Static | MeshGroup::Comb => root,
             MeshGroup::Lid => lid_pivot,
-            MeshGroup::Cylinder => cylinder_pivot,
+            MeshGroup::Cylinder => continue,
             MeshGroup::Excluded => continue,
         };
         let mut transform = primitive.transform;
@@ -519,12 +545,23 @@ fn spawn_spec_model(
         commands.entity(parent).add_child(child);
     }
 
+    spawn_hint_mechanism(
+        &mut commands,
+        &mut render_meshes,
+        &mut materials,
+        root,
+        cylinder_pivot,
+        cylinder_pose,
+        &mechanism.hint,
+    );
+
     state.spawned = true;
     info!(
-        "spawned closed music box rig: meshes={}, lid_meshes={}, cylinder_meshes={}",
+        "spawned closed music box rig: meshes={}, lid_meshes={}, cylinder_meshes={}, teeth={}",
         model.model.spec().closed_model.mesh_indices.len(),
         model.model.spec().lid.meshes.len(),
-        model.model.spec().cylinder.meshes.len()
+        model.model.spec().cylinder.meshes.len(),
+        mechanism.hint.events.len()
     );
 }
 
@@ -532,12 +569,21 @@ fn apply_rig_controls(
     time: Res<Time>,
     mut controls: ResMut<ExhibitControls>,
     mut model: ResMut<ModelResource>,
+    mechanism: Res<MechanismResource>,
+    mut playback: ResMut<PlaybackState>,
     mut lid_query: Query<&mut Transform, (With<LidPivot>, Without<CylinderPivot>)>,
     mut cylinder_query: Query<&mut Transform, (With<CylinderPivot>, Without<LidPivot>)>,
 ) {
     model.model.set_lid_t(controls.lid_t);
-    model.model.set_cylinder_degrees(controls.cylinder_degrees);
-    model.model.set_cylinder_spin(controls.cylinder_spin);
+    if playback.is_playing {
+        playback.elapsed_seconds += time.delta_secs();
+        controls.cylinder_degrees = synced_cylinder_degrees(playback.elapsed_seconds, &mechanism);
+        model.model.set_cylinder_degrees(controls.cylinder_degrees);
+        model.model.set_cylinder_spin(false);
+    } else {
+        model.model.set_cylinder_degrees(controls.cylinder_degrees);
+        model.model.set_cylinder_spin(controls.cylinder_spin);
+    }
     model.model.advance(time.delta_secs());
     controls.cylinder_degrees = model.model.state().cylinder_degrees;
 
@@ -563,6 +609,108 @@ fn report_model_load(mut state: ResMut<ModelSpawnState>, meshes: Query<&Mesh3d>)
     info!("music box scene spawned; mesh component count: {mesh_count}");
     state.spawned = true;
     state.logged = true;
+}
+
+fn spawn_hint_mechanism(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    root: Entity,
+    cylinder_pivot: Entity,
+    cylinder_pose: PivotPose,
+    hint: &MechanismLayoutHint,
+) {
+    let axis = vec3(cylinder_pose.axis).normalize_or_zero();
+    let (radial_zero, tangent_zero) = cylinder_radial_frame(axis);
+    let cylinder_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.96, 0.73, 0.24),
+        metallic: 0.15,
+        perceptual_roughness: 0.44,
+        ..default()
+    });
+    let tooth_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(1.0, 0.83, 0.28),
+        metallic: 0.2,
+        perceptual_roughness: 0.35,
+        ..default()
+    });
+    let comb_material = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.82, 0.86, 0.86),
+        metallic: 0.55,
+        perceptual_roughness: 0.28,
+        ..default()
+    });
+
+    let cylinder = commands
+        .spawn((
+            Name::new("Hint Cylinder Body"),
+            ProceduralMechanism,
+            Mesh3d(
+                meshes.add(
+                    Cylinder::new(PROCEDURAL_CYLINDER_RADIUS, PROCEDURAL_CYLINDER_LENGTH)
+                        .mesh()
+                        .resolution(48),
+                ),
+            ),
+            MeshMaterial3d(cylinder_material),
+            Transform::from_rotation(Quat::from_rotation_arc(Vec3::Y, axis)),
+            Visibility::Visible,
+        ))
+        .id();
+    commands.entity(cylinder_pivot).add_child(cylinder);
+
+    for tooth in &hint.events {
+        let transform = tooth_transform(tooth, hint, axis, radial_zero, tangent_zero);
+        let entity = commands
+            .spawn((
+                Name::new(format!(
+                    "Hint Tooth midi {} tick {}",
+                    tooth.midi_note, tooth.onset_tick
+                )),
+                ProceduralMechanism,
+                Mesh3d(meshes.add(Cuboid::new(
+                    TOOTH_WIDTH,
+                    TOOTH_HEIGHT,
+                    TOOTH_RADIAL_PROTRUSION,
+                ))),
+                MeshMaterial3d(tooth_material.clone()),
+                transform,
+                Visibility::Visible,
+            ))
+            .id();
+        commands.entity(cylinder_pivot).add_child(entity);
+    }
+
+    let mut notes = hint
+        .events
+        .iter()
+        .map(|event| event.midi_note)
+        .collect::<Vec<_>>();
+    notes.sort_unstable();
+    notes.dedup();
+    for midi_note in notes {
+        let axial = note_axial_position(midi_note, hint);
+        let position = axis * axial
+            + radial_zero * (PROCEDURAL_CYLINDER_RADIUS + COMB_TINE_LENGTH * 0.55)
+            - tangent_zero * 0.018;
+        let rotation = basis_rotation(axis, -radial_zero, tangent_zero);
+        let entity = commands
+            .spawn((
+                Name::new(format!("Comb Tine midi {midi_note}")),
+                ProceduralMechanism,
+                Mesh3d(meshes.add(Cuboid::new(
+                    COMB_TINE_WIDTH,
+                    COMB_TINE_LENGTH,
+                    COMB_TINE_THICKNESS,
+                ))),
+                MeshMaterial3d(comb_material.clone()),
+                Transform::from_translation(vec3(cylinder_pose.pivot) + position)
+                    .with_rotation(rotation),
+                Visibility::Visible,
+            ))
+            .id();
+        commands.entity(root).add_child(entity);
+    }
 }
 
 fn auto_screenshot(
@@ -622,6 +770,7 @@ fn start_playback(playback: &mut PlaybackState, volume: f32) {
     ));
     playback.player = Some(player);
     playback.is_playing = true;
+    playback.elapsed_seconds = 0.0;
     playback.last_error = None;
 }
 
@@ -630,6 +779,7 @@ fn stop_playback(playback: &mut PlaybackState) {
         player.stop();
     }
     playback.is_playing = false;
+    playback.elapsed_seconds = 0.0;
 }
 
 fn camera_transform(controls: &ExhibitControls) -> Transform {
@@ -660,12 +810,83 @@ fn spotlight_transform(controls: &ExhibitControls) -> Transform {
     Transform::from_translation(position).looking_at(EXHIBIT_TARGET, Vec3::Y)
 }
 
+fn synced_cylinder_degrees(elapsed_seconds: f32, mechanism: &MechanismResource) -> f32 {
+    let elapsed_millis = (elapsed_seconds.max(0.0) * 1000.0) as i64;
+    let tick = elapsed_millis * PPQ / mechanism.quarter_millis as i64;
+    let wrapped =
+        tick.rem_euclid(mechanism.ticks_per_turn) as f32 / mechanism.ticks_per_turn as f32;
+    -wrapped * 360.0
+}
+
 fn load_movable_model() -> ModelResource {
     let spec = ModelSpec::from_toml_path(DEFAULT_MODEL_SPEC)
         .unwrap_or_else(|err| panic!("failed to load default music-box model spec: {err}"));
     ModelResource {
         model: MovableMusicBoxModel::new(spec),
     }
+}
+
+fn load_mechanism_layout() -> MechanismResource {
+    let plan = defaults::air_intro_plan();
+    let timeline = plan.composed_score().expand();
+    let planner = MechanismPlanner::default();
+    let ticks_per_turn = planner.ticks_per_turn;
+    let hint = planner.plan(&timeline);
+    MechanismResource {
+        hint,
+        ticks_per_turn,
+        quarter_millis: timeline.tempo.ticks_to_millis(PPQ),
+    }
+}
+
+fn tooth_transform(
+    tooth: &ToothHint,
+    hint: &MechanismLayoutHint,
+    axis: Vec3,
+    radial_zero: Vec3,
+    tangent_zero: Vec3,
+) -> Transform {
+    let angle = tooth.angle_rad;
+    let radial = radial_zero * angle.cos() + tangent_zero * angle.sin();
+    let tangent = (-radial_zero * angle.sin() + tangent_zero * angle.cos()).normalize_or_zero();
+    let axial = hint_axial_position(tooth.axial_position, hint);
+    let position = axis * axial + radial * (PROCEDURAL_CYLINDER_RADIUS + TOOTH_HEIGHT * 0.48);
+    Transform::from_translation(position).with_rotation(basis_rotation(axis, radial, tangent))
+}
+
+fn note_axial_position(midi_note: i32, hint: &MechanismLayoutHint) -> f32 {
+    hint.events
+        .iter()
+        .find(|event| event.midi_note == midi_note)
+        .map(|event| hint_axial_position(event.axial_position, hint))
+        .unwrap_or(0.0)
+}
+
+fn hint_axial_position(axial_position: f32, hint: &MechanismLayoutHint) -> f32 {
+    let normalized = if hint.cylinder_length.abs() <= f32::EPSILON {
+        0.0
+    } else {
+        axial_position / hint.cylinder_length - 0.5
+    };
+    normalized * PROCEDURAL_CYLINDER_LENGTH
+}
+
+fn cylinder_radial_frame(axis: Vec3) -> (Vec3, Vec3) {
+    let mut radial = Vec3::Y - axis * Vec3::Y.dot(axis);
+    if radial.length_squared() < 1e-6 {
+        radial = Vec3::X - axis * Vec3::X.dot(axis);
+    }
+    let radial = radial.normalize_or_zero();
+    let tangent = axis.cross(radial).normalize_or_zero();
+    (radial, tangent)
+}
+
+fn basis_rotation(x_axis: Vec3, y_axis: Vec3, z_axis: Vec3) -> Quat {
+    Quat::from_mat3(&Mat3::from_cols(
+        x_axis.normalize_or_zero(),
+        y_axis.normalize_or_zero(),
+        z_axis.normalize_or_zero(),
+    ))
 }
 
 fn env_f32(name: &str, default: f32) -> f32 {
@@ -704,5 +925,29 @@ fn to_standard_material(material: &GltfMaterial) -> StandardMaterial {
         cull_mode: material.cull_mode,
         double_sided: material.double_sided,
         ..default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playback_clock_drives_cylinder_phase_from_ticks() {
+        let mechanism = MechanismResource {
+            hint: MechanismLayoutHint {
+                cylinder_radius: 18.0,
+                cylinder_length: 80.0,
+                track_spacing: 2.0,
+                events: Vec::new(),
+                diagnostics: Vec::new(),
+            },
+            ticks_per_turn: PPQ * 4,
+            quarter_millis: 500,
+        };
+
+        assert_eq!(synced_cylinder_degrees(0.0, &mechanism), -0.0);
+        assert_eq!(synced_cylinder_degrees(1.0, &mechanism), -180.0);
+        assert_eq!(synced_cylinder_degrees(2.0, &mechanism), -0.0);
     }
 }
