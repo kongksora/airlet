@@ -128,7 +128,7 @@ def main() -> None:
     spec_path = args.out_dir / "model-spec.toml"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     report_path.write_text(_render_report(payload), encoding="utf-8")
-    spec_path.write_text(_render_spec_draft(payload), encoding="utf-8")
+    spec_path.write_text(_render_spec_draft(payload, meshes), encoding="utf-8")
     _render_debug_image(probes, image_path)
 
     print(f"wrote {json_path}")
@@ -351,8 +351,21 @@ def _moving_hinge_meshes(
         center_up = float(mesh["center"] @ up)
         max_extent = float(mesh["extent"].max())
         if center_front >= rear_threshold and lower_up <= center_up <= upper_up and max_extent < 0.09:
-            candidates.append(index)
-    return sorted(candidates)
+            candidates.append((index, center_up, float(mesh["extent"][1])))
+    if not candidates:
+        return []
+
+    # Upper hinge leaves should follow the lid; lower leaves remain mounted on
+    # the body. The downloaded model separates the leaves, so use vertical
+    # center and reject the thin center plates/pins from the moving group.
+    centers = np.array([center for _, center, _ in candidates])
+    upper_threshold = float(np.median(centers))
+    moving = [
+        index
+        for index, center, vertical_extent in candidates
+        if center >= upper_threshold and vertical_extent > 0.02
+    ]
+    return sorted(moving)
 
 
 def _hinge_axis_from_meshes(
@@ -549,7 +562,7 @@ def _render_report(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _render_spec_draft(payload: dict[str, Any]) -> str:
+def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]) -> str:
     closed = [mesh for mesh in payload["meshes"] if mesh["cluster"] == "closed"]
     roles = {
         role: [int(_mesh_index(mesh["geometry"])) for mesh in closed if mesh["role"] == role]
@@ -570,8 +583,8 @@ def _render_spec_draft(payload: dict[str, Any]) -> str:
         - set(lid_meshes)
     )
     closed_cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
-    cylinder_center = _largest_mesh_center(payload["meshes"], cylinder_meshes)
-    cylinder_axis = _cylinder_axis(payload["meshes"], cylinder_meshes)
+    cylinder_center = _cylinder_pivot(raw_meshes, cylinder_meshes)
+    cylinder_axis = _cylinder_axis(raw_meshes, cylinder_meshes)
 
     return "\n".join(
         [
@@ -616,27 +629,6 @@ def _mesh_index(geometry: str) -> int:
     return int(geometry.split(".", 1)[1])
 
 
-def _mesh_center(meshes: list[dict[str, Any]], index: int) -> list[float]:
-    name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
-    for mesh in meshes:
-        if mesh["geometry"] == name:
-            return mesh["center"]
-    return [0.0, 0.0, 0.0]
-
-
-def _largest_mesh_center(meshes: list[dict[str, Any]], indices: list[int]) -> list[float]:
-    candidates = []
-    for index in indices:
-        name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
-        mesh = next((item for item in meshes if item["geometry"] == name), None)
-        if mesh is not None:
-            candidates.append(mesh)
-    if not candidates:
-        return [0.0, 0.0, 0.0]
-    mesh = max(candidates, key=lambda item: np.prod(np.array(item["extent"])))
-    return mesh["center"]
-
-
 def _horizontal_axis_from_pca(pca_axes: list[list[float]]) -> np.ndarray:
     candidates = []
     for raw_axis in pca_axes:
@@ -653,19 +645,36 @@ def _horizontal_axis_from_pca(pca_axes: list[list[float]]) -> np.ndarray:
 
 
 def _cylinder_axis(meshes: list[dict[str, Any]], indices: list[int]) -> list[float]:
-    candidates = []
-    for index in indices:
-        name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
-        for mesh in meshes:
-            if mesh["geometry"] == name and "pca_axes" in mesh:
-                candidates.append(mesh)
-    if candidates:
-        mesh = max(candidates, key=lambda item: np.prod(np.array(item["extent"])))
-        axis = _horizontal_axis_from_pca(mesh["pca_axes"])
+    mesh = _dominant_cylinder_mesh(meshes, indices)
+    if mesh is not None:
+        _, axes = _pca_frame(mesh["points"])
+        axis = _horizontal_axis_from_pca([_round_vec(axis) for axis in axes])
         if axis[0] < 0.0:
             axis = -axis
         return _round_vec(axis / np.linalg.norm(axis))
     return [1.0, 0.0, 0.0]
+
+
+def _cylinder_pivot(meshes: list[dict[str, Any]], indices: list[int]) -> list[float]:
+    mesh = _dominant_cylinder_mesh(meshes, indices)
+    if mesh is None:
+        return [0.0, 0.0, 0.0]
+    center, _ = _pca_frame(mesh["points"])
+    return _round_vec(center)
+
+
+def _dominant_cylinder_mesh(
+    meshes: list[dict[str, Any]], indices: list[int]
+) -> dict[str, Any] | None:
+    candidates = []
+    for index in indices:
+        name = "Mesh" if index == 0 else f"Mesh.{index:03d}"
+        mesh = next((item for item in meshes if item["geometry"] == name), None)
+        if mesh is not None:
+            candidates.append(mesh)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: np.prod(np.array(item["extent"])))
 
 
 def _toml_list(values: list[Any]) -> str:

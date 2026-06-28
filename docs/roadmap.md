@@ -255,6 +255,23 @@ Implementation checklist:
 - [x] Update `assets/models/converted/spec.toml` from the fitted values.
 - [x] Validate screenshots until the hinge error is not visually noticeable.
 
+### Hinge And Cylinder Axis Refinement
+
+The first paired-geometry pass moved every detected hinge mesh with the lid and
+used the cylinder AABB center as the rotation pivot. That is visibly wrong: the
+lower hinge leaves should stay fixed on the body, and the cylinder pivot should
+lie on the fitted cylinder centerline.
+
+Implementation checklist:
+
+- [x] Split hinge hardware into fixed lower leaves and lid-following upper
+  leaves using closed-model geometry.
+- [x] Keep fixed hinge leaves in the static body group.
+- [x] Fit the cylinder pivot from the cylinder point cloud centroid projected
+  onto the cylinder PCA axis, not from the AABB center.
+- [x] Regenerate and apply `assets/models/converted/spec.toml`.
+- [x] Screenshot-validate lid opening and cylinder rotation again.
+
 ## API Polish Roadmap
 
 This second pass turns the working backend into a cleaner crate surface for the
