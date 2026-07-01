@@ -3939,3 +3939,38 @@ Completion notes:
   wood mesh bounds directly for `Mesh` and `Mesh.008`.
 - Hardware remains useful only for validating fit and for locating functional
   openings such as the crank hole.
+
+### Blender Handoff Oriented Wood Bounds
+
+Purpose: replace axis-aligned wood shell sizing with an oriented bound computed
+from each original wood mesh. The shell size source remains the wood mesh
+itself, but residual in-plane rotation is now handled explicitly instead of
+assuming the imported mesh is perfectly axis-aligned.
+
+Checklist:
+
+- [x] Compute a horizontal OBB from each wood mesh's local vertex cloud using
+  its own principal axes in the Blender `X/Y` plane, with `Z` min/max kept from
+  the mesh.
+- [x] Generate lid/body proxy vertices in OBB-local coordinates, then transform
+  them back into Blender object-local coordinates.
+- [x] Place the round crank opening using the OBB's local `+X` side rather than
+  the world AABB side.
+- [x] Regenerate `target/manual-roundover/music_box_manual_bevel_handoff.blend`.
+- [x] Validate that restored wood proxy bounds match the OBB-derived dimensions,
+  topology remains manifold, and bottom-face center placement still holds.
+- [x] Run Python compile validation, `git diff --check`, and commit the fix.
+
+Completion notes:
+
+- `py/airlet_audio_lab/build_manual_bevel_handoff.py` now computes
+  `OrientedShellBounds` from each source wood mesh before replacement.
+- The generated `Mesh` and `Mesh.008` objects store
+  `airlet_source_bounds_kind = horizontal_obb` plus OBB origin, axes, min/max,
+  and dimensions for later inspection.
+- Validation from the regenerated `.blend`: `Mesh` source OBB dimensions are
+  `[0.525021, 0.429683, 0.083748]` at `0.0` degrees; `Mesh.008` source OBB
+  dimensions are `[0.525811, 0.430691, 0.190378]` at `-0.132117` degrees.
+- Topology validation remains clean: both wood proxies have `0` boundary edges
+  and `0` overused/non-manifold edges, and the full assembly bottom center is
+  still at the Blender origin.
