@@ -3974,3 +3974,41 @@ Completion notes:
 - Topology validation remains clean: both wood proxies have `0` boundary edges
   and `0` overused/non-manifold edges, and the full assembly bottom center is
   still at the Blender origin.
+
+### Blender Handoff Original Wood Geometry Source
+
+Purpose: fix the handoff sizing chain so wood dimensions and oriented bounds are
+computed from the original converted wood meshes, not from the already
+simplified `assets/generated/music_box_aligned_base.glb` proxy meshes.
+
+Checklist:
+
+- [x] Add original source GLB/spec inputs to the handoff builder.
+- [x] Reuse the aligned-base basis transform so source wood mesh points are
+  measured in the same aligned coordinate frame as the runtime model.
+- [x] Replace `Mesh` and `Mesh.008` with original source wood geometry
+  transformed into the aligned Blender frame, rather than regenerating them from
+  any bounding box.
+- [x] Store source-derived OBB metadata on the wood objects for inspection, but
+  do not use the OBB to fill missing shell geometry.
+- [x] Keep non-wood context loaded from the aligned base so runtime mesh order
+  and current spec remain unchanged.
+- [x] Regenerate the manual bevel `.blend` and validate source-derived OBB
+  dimensions differ from or explain the previous proxy-derived values.
+- [x] Run Python compile validation, `git diff --check`, and commit the fix.
+
+Completion notes:
+
+- `py/airlet_audio_lab/build_manual_bevel_handoff.py` now imports
+  `assets/models/converted/music_box.glb` first, reads source `Mesh` and
+  `Mesh.008`, transforms their vertices using `source_spec.toml` basis into the
+  same Blender handoff frame, then loads the aligned base for all non-wood
+  context.
+- Handoff wood geometry is no longer a generated box proxy. Current regenerated
+  geometry: `Mesh` has 46 vertices and 26 source faces; `Mesh.008` has 772
+  vertices and 876 source faces.
+- Source-derived OBB metadata: `Mesh` dimensions
+  `[0.524995, 0.429649, 0.083748]` at `-0.004241` degrees; `Mesh.008`
+  dimensions `[0.59205, 0.525857, 0.190378]` at `13.648449` degrees.
+- The generated `.blend` keeps the full assembly bottom center at the Blender
+  origin and has no overused/non-manifold wood edges.
