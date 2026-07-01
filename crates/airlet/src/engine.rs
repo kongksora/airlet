@@ -5,9 +5,9 @@ use rand::{SeedableRng, rngs::StdRng};
 use crate::{
     BoxTine, ModalTine, TineParams,
     audio::RenderedAudio,
-    compat::ModelPlaybackConfig,
     midi_to_freq,
     performance::{ModelPreset, PerformancePlan},
+    render_config::ModelPlaybackConfig,
     score::{Timeline, TimelineEvent},
 };
 

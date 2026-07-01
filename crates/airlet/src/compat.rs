@@ -5,10 +5,7 @@ use std::{
 
 use rand::{SeedableRng, rngs::StdRng};
 
-use crate::{
-    BoxTine, ModalTine, TineParams, midi_to_freq, model::MusicBoxModel, performance::ModelPreset,
-    preset::PresetLibrary, songs,
-};
+use crate::{BoxTine, ModalTine, TineParams, midi_to_freq, songs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoteEvent {
@@ -264,28 +261,7 @@ pub fn render_air_intro_a_dry(sample_rate: NonZero<u32>) -> Vec<f32> {
     )
 }
 
-#[derive(Debug, Clone)]
-pub struct ModelPlaybackConfig {
-    pub note_tail: Duration,
-    pub note_gain: f32,
-    pub final_tail: Duration,
-    pub model: MusicBoxModel,
-    pub seed: u64,
-}
-
-impl ModelPlaybackConfig {
-    pub fn air_dry() -> Self {
-        Self {
-            note_tail: Duration::from_millis(1200),
-            note_gain: 0.17,
-            final_tail: Duration::from_millis(800),
-            model: PresetLibrary::bundled()
-                .load_model(ModelPreset::ADry)
-                .expect("bundled a-dry preset must be valid"),
-            seed: 42,
-        }
-    }
-}
+pub use crate::render_config::ModelPlaybackConfig;
 
 fn millis_to_samples(millis: u64, sample_rate: NonZero<u32>) -> usize {
     ((millis as f64 / 1000.0) * sample_rate.get() as f64).round() as usize

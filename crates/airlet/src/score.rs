@@ -450,3 +450,215 @@ pub fn g(midi_note: i32, dur: Dur) -> GraceNote {
         velocity: 0.55,
     }
 }
+
+// ── Score validation ────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScoreError {
+    /// Tempo must have a positive quarter-millis value.
+    InvalidTempo,
+    /// A note or rest duration must be positive.
+    InvalidDuration,
+    /// Velocity must be finite and in [0.0, 2.0].
+    InvalidVelocity,
+    /// A tie must form a valid chain (Start → Continue* → End, or None).
+    InvalidTie,
+    /// The expanded timeline is empty or contains invalid onsets.
+    InvalidTimeline,
+}
+
+impl std::fmt::Display for ScoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScoreError::InvalidTempo => {
+                write!(f, "tempo must have a positive quarter-millis value")
+            }
+            ScoreError::InvalidDuration => write!(f, "note and rest durations must be positive"),
+            ScoreError::InvalidVelocity => write!(f, "velocity must be finite and in [0.0, 2.0]"),
+            ScoreError::InvalidTie => write!(
+                f,
+                "tie chain is invalid (must be Start → Continue* → End, or None)"
+            ),
+            ScoreError::InvalidTimeline => write!(f, "timeline is empty or contains invalid data"),
+        }
+    }
+}
+
+impl std::error::Error for ScoreError {}
+
+impl Tempo {
+    pub fn validate(&self) -> Result<(), ScoreError> {
+        if self.quarter_millis == 0 {
+            return Err(ScoreError::InvalidTempo);
+        }
+        Ok(())
+    }
+}
+
+impl Timeline {
+    /// Validate the expanded timeline for common data errors.
+    ///
+    /// Checks:
+    /// - Non-empty events
+    /// - Positive durations
+    /// - Finite velocities in range
+    /// - Valid tie chains within each voice
+    /// - Monotonic onsets within each voice
+    pub fn validate(&self) -> Result<(), ScoreError> {
+        self.tempo.validate()?;
+
+        if self.events.is_empty() {
+            return Err(ScoreError::InvalidTimeline);
+        }
+
+        for event in &self.events {
+            if event.duration.ticks() <= 0 {
+                return Err(ScoreError::InvalidDuration);
+            }
+            if !event.velocity.is_finite() || event.velocity < 0.0 || event.velocity > 2.0 {
+                return Err(ScoreError::InvalidVelocity);
+            }
+        }
+
+        // Validate tie chains per voice: a Start must be followed by Continue/End,
+        // a Continue must be preceded by Start/Continue and followed by Continue/End,
+        // an End must be preceded by Start/Continue.
+        let mut voices: std::collections::BTreeMap<&str, Vec<&TimelineEvent>> =
+            std::collections::BTreeMap::new();
+        for event in &self.events {
+            voices.entry(&event.voice).or_default().push(event);
+        }
+        for (_voice, events) in &voices {
+            let mut tie_state: Option<Tie> = None;
+            for event in events {
+                match (tie_state, event.tie) {
+                    (_, Tie::None) => tie_state = None,
+                    (None, Tie::Start) => tie_state = Some(Tie::Start),
+                    (None, Tie::Continue | Tie::End) => return Err(ScoreError::InvalidTie),
+                    (Some(Tie::Start | Tie::Continue), Tie::Continue | Tie::End) => {
+                        tie_state = Some(event.tie)
+                    }
+                    (Some(Tie::End), Tie::Start) => tie_state = Some(Tie::Start),
+                    (Some(_), _) => return Err(ScoreError::InvalidTie),
+                }
+            }
+            if tie_state == Some(Tie::Start) || tie_state == Some(Tie::Continue) {
+                return Err(ScoreError::InvalidTie);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    fn make_event(onset: i64, dur: i64, velocity: f32, tie: Tie) -> TimelineEvent {
+        TimelineEvent {
+            onset: Tick(onset),
+            duration: Dur::from_ticks(dur),
+            midi_note: 60,
+            velocity,
+            voice: "test".into(),
+            kind: EventKind::Main,
+            tie,
+            slur: false,
+        }
+    }
+
+    #[test]
+    fn valid_timeline_passes_validation() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(500),
+            events: vec![
+                make_event(0, PPQ, 1.0, Tie::None),
+                make_event(PPQ, PPQ, 0.8, Tie::None),
+            ],
+        };
+        assert!(timeline.validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_tempo_is_rejected() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(0),
+            events: vec![make_event(0, PPQ, 1.0, Tie::None)],
+        };
+        assert_eq!(timeline.validate(), Err(ScoreError::InvalidTempo));
+    }
+
+    #[test]
+    fn empty_timeline_is_rejected() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(500),
+            events: vec![],
+        };
+        assert_eq!(timeline.validate(), Err(ScoreError::InvalidTimeline));
+    }
+
+    #[test]
+    fn zero_duration_is_rejected() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(500),
+            events: vec![make_event(0, 0, 1.0, Tie::None)],
+        };
+        assert_eq!(timeline.validate(), Err(ScoreError::InvalidDuration));
+    }
+
+    #[test]
+    fn negative_velocity_is_rejected() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(500),
+            events: vec![make_event(0, PPQ, -0.1, Tie::None)],
+        };
+        assert_eq!(timeline.validate(), Err(ScoreError::InvalidVelocity));
+    }
+
+    #[test]
+    fn excessive_velocity_is_rejected() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(500),
+            events: vec![make_event(0, PPQ, 3.0, Tie::None)],
+        };
+        assert_eq!(timeline.validate(), Err(ScoreError::InvalidVelocity));
+    }
+
+    #[test]
+    fn orphan_continue_is_rejected() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(500),
+            events: vec![make_event(0, PPQ, 1.0, Tie::Continue)],
+        };
+        assert_eq!(timeline.validate(), Err(ScoreError::InvalidTie));
+    }
+
+    #[test]
+    fn unclosed_start_is_rejected() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(500),
+            events: vec![make_event(0, PPQ, 1.0, Tie::Start)],
+        };
+        assert_eq!(timeline.validate(), Err(ScoreError::InvalidTie));
+    }
+
+    #[test]
+    fn valid_tie_chain_passes() {
+        let timeline = Timeline {
+            tempo: Tempo::from_quarter_millis(500),
+            events: vec![
+                make_event(0, PPQ, 1.0, Tie::Start),
+                make_event(PPQ, PPQ, 1.0, Tie::Continue),
+                make_event(PPQ * 2, PPQ, 1.0, Tie::End),
+            ],
+        };
+        assert!(timeline.validate().is_ok());
+    }
+
+    #[test]
+    fn existing_air_intro_score_validates() {
+        let timeline = crate::songs::air::intro_score().expand();
+        assert!(timeline.validate().is_ok());
+    }
+}

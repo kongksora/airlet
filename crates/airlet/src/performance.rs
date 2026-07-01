@@ -1,7 +1,8 @@
 use crate::{
     TineParams,
-    compat::{ModelPlaybackConfig, PlaybackConfig},
+    compat::PlaybackConfig,
     model::MusicBoxModel,
+    render_config::ModelPlaybackConfig,
     score::{ComposedScore, Composition, Tempo},
 };
 

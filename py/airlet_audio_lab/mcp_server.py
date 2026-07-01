@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -25,91 +26,121 @@ def _call(action: dict[str, Any], addr: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def dump_state(addr: str = DEFAULT_ADDR) -> dict[str, Any]:
-    """Return the current Airlet camera, light, rig, playback, and mechanism state."""
-    return _call({"action": "dump_state"}, addr)
+def describe_actions(addr: str = DEFAULT_ADDR) -> dict[str, Any]:
+    """Return the Rust-owned Airlet debug action catalog."""
+    return _call({"action": "describe_actions"}, addr)
 
 
 @mcp.tool()
-def dump_mechanism(addr: str = DEFAULT_ADDR) -> dict[str, Any]:
-    """Return detailed cylinder, comb, tooth, and score-to-geometry mapping data."""
-    return _call({"action": "dump_mechanism"}, addr)
+def call_action(action: dict[str, Any], addr: str = DEFAULT_ADDR) -> dict[str, Any]:
+    """Call any Airlet debug action object against the local debug endpoint."""
+    return _call(action, addr)
 
 
-@mcp.tool()
-def set_camera(
-    yaw: float | None = None,
-    pitch: float | None = None,
-    radius: float | None = None,
-    addr: str = DEFAULT_ADDR,
-) -> dict[str, Any]:
-    """Set orbit camera parameters in radians/meters and return the updated state."""
-    return _call(
-        {"action": "set_camera", "yaw": yaw, "pitch": pitch, "radius": radius},
-        addr,
+def _register_dynamic_action_tools() -> None:
+    try:
+        catalog = describe_actions(DEFAULT_ADDR)
+    except Exception:
+        return
+
+    for spec in catalog.get("actions", []):
+        name = spec.get("name")
+        if not isinstance(name, str) or name in {"describe_actions"}:
+            continue
+        tool = _make_action_tool(spec)
+        mcp.add_tool(
+            tool,
+            name=name,
+            title=spec.get("title"),
+            description=spec.get("description"),
+            structured_output=True,
+        )
+
+
+def _make_action_tool(spec: dict[str, Any]):
+    action_name = spec["name"]
+    parameters = [
+        parameter
+        for parameter in spec.get("parameters", [])
+        if isinstance(parameter, dict) and isinstance(parameter.get("name"), str)
+    ]
+
+    def action_tool(**kwargs: Any) -> dict[str, Any]:
+        addr = kwargs.pop("addr", DEFAULT_ADDR)
+        action: dict[str, Any] = {"action": action_name}
+        for parameter in parameters:
+            name = parameter["name"]
+            if name in kwargs and kwargs[name] is not None:
+                action[name] = kwargs[name]
+            elif parameter.get("required"):
+                raise ValueError(f"missing required Airlet action parameter: {name}")
+        return _call(action, addr)
+
+    action_tool.__name__ = f"airlet_action_{action_name}"
+    action_tool.__doc__ = spec.get("description")
+    action_tool.__annotations__ = {
+        parameter["name"]: _schema_annotation(parameter.get("schema", {}))
+        for parameter in parameters
+    }
+    action_tool.__annotations__["addr"] = str
+    action_tool.__annotations__["return"] = dict[str, Any]
+    action_tool.__signature__ = _tool_signature(parameters)
+    return action_tool
+
+
+def _tool_signature(parameters: list[dict[str, Any]]) -> inspect.Signature:
+    required = [parameter for parameter in parameters if parameter.get("required")]
+    optional = [parameter for parameter in parameters if not parameter.get("required")]
+    signature_parameters = [
+        _inspect_parameter(parameter, required=True) for parameter in required
+    ] + [
+        _inspect_parameter(parameter, required=False) for parameter in optional
+    ]
+    signature_parameters.append(
+        inspect.Parameter(
+            "addr",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=DEFAULT_ADDR,
+            annotation=str,
+        )
+    )
+    return inspect.Signature(
+        parameters=signature_parameters,
+        return_annotation=dict[str, Any],
     )
 
 
-@mcp.tool()
-def set_light(
-    yaw: float | None = None,
-    pitch: float | None = None,
-    inner_angle: float | None = None,
-    outer_angle: float | None = None,
-    intensity: float | None = None,
-    addr: str = DEFAULT_ADDR,
-) -> dict[str, Any]:
-    """Set spotlight direction, cone angles, and intensity, then return the updated state."""
-    return _call(
-        {
-            "action": "set_light",
-            "yaw": yaw,
-            "pitch": pitch,
-            "inner_angle": inner_angle,
-            "outer_angle": outer_angle,
-            "intensity": intensity,
-        },
-        addr,
+def _inspect_parameter(parameter: dict[str, Any], *, required: bool) -> inspect.Parameter:
+    name = parameter["name"]
+    default = inspect.Parameter.empty if required else None
+    return inspect.Parameter(
+        name,
+        inspect.Parameter.KEYWORD_ONLY,
+        default=default,
+        annotation=_schema_annotation(parameter.get("schema", {})),
     )
 
 
-@mcp.tool()
-def set_lid(t: float, addr: str = DEFAULT_ADDR) -> dict[str, Any]:
-    """Set lid open parameter t in [0, 1] and return the updated state."""
-    return _call({"action": "set_lid", "t": t}, addr)
+def _schema_annotation(schema: object) -> object:
+    if not isinstance(schema, dict):
+        return Any
+    schema_type = schema.get("type")
+    if schema_type == "boolean":
+        return bool
+    if schema_type == "integer":
+        return int
+    if schema_type == "number":
+        return float
+    if schema_type == "string":
+        return str
+    if schema_type == "array":
+        return list[Any]
+    if schema_type == "object":
+        return dict[str, Any]
+    return Any
 
 
-@mcp.tool()
-def set_cylinder(degrees: float, addr: str = DEFAULT_ADDR) -> dict[str, Any]:
-    """Set cylinder rotation in degrees and return the updated state."""
-    return _call({"action": "set_cylinder", "degrees": degrees}, addr)
-
-
-@mcp.tool()
-def seek_tick(tick: int, addr: str = DEFAULT_ADDR) -> dict[str, Any]:
-    """Seek playback and cylinder phase to an absolute score tick."""
-    return _call({"action": "seek_tick", "tick": tick}, addr)
-
-
-@mcp.tool()
-def play(addr: str = DEFAULT_ADDR) -> dict[str, Any]:
-    """Start the Airlet performance."""
-    return _call({"action": "play"}, addr)
-
-
-@mcp.tool()
-def stop(addr: str = DEFAULT_ADDR) -> dict[str, Any]:
-    """Stop the Airlet performance."""
-    return _call({"action": "stop"}, addr)
-
-
-@mcp.tool()
-def screenshot(
-    path: str = "target/airlet-mcp-shot.png",
-    addr: str = DEFAULT_ADDR,
-) -> dict[str, Any]:
-    """Capture the primary Bevy window to a PNG path."""
-    return _call({"action": "screenshot", "path": path}, addr)
+_register_dynamic_action_tools()
 
 
 def main() -> None:

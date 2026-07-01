@@ -16,7 +16,7 @@ def main() -> None:
     parser.add_argument("--addr", default=DEFAULT_ADDR)
     args = parser.parse_args()
 
-    request = _parse_action(args.action)
+    request = _parse_action(args.action, args.addr)
     parsed = send_action(request, args.addr)
     json.dump(parsed, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
@@ -36,15 +36,13 @@ def send_action(action: dict[str, Any], addr: str = DEFAULT_ADDR) -> dict[str, A
     return parsed
 
 
-def _parse_action(action: str) -> dict[str, Any]:
-    shorthands = {
-        "state": {"action": "dump_state"},
-        "mechanism": {"action": "dump_mechanism"},
-        "play": {"action": "play"},
-        "stop": {"action": "stop"},
-    }
-    if action in shorthands:
-        return shorthands[action]
+def _parse_action(action: str, addr: str) -> dict[str, Any]:
+    alias = {
+        "state": "dump_state",
+        "mechanism": "dump_mechanism",
+    }.get(action, action)
+    if _catalog_contains_action(alias, addr):
+        return {"action": alias}
     try:
         parsed = json.loads(action)
     except json.JSONDecodeError as exc:
@@ -52,6 +50,29 @@ def _parse_action(action: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise SystemExit("debug action must be a JSON object")
     return parsed
+
+
+def _catalog_contains_action(action: str, addr: str) -> bool:
+    try:
+        catalog = send_action({"action": "describe_actions"}, addr)
+    except OSError:
+        return False
+    except TimeoutError:
+        return False
+    except RuntimeError:
+        return False
+    if not catalog.get("ok"):
+        return False
+    data = catalog.get("data")
+    if not isinstance(data, dict):
+        return False
+    actions = data.get("actions")
+    if not isinstance(actions, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("name") == action
+        for item in actions
+    )
 
 
 def _parse_addr(addr: str) -> tuple[str, int]:

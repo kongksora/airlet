@@ -16,6 +16,8 @@ pub struct ModelSpec {
     pub lid: RotatingPartSpec,
     pub cylinder: RotatingPartSpec,
     #[serde(default)]
+    pub winding_key: Option<RotatingPartSpec>,
+    #[serde(default)]
     pub comb: MeshPartSpec,
 }
 
@@ -75,6 +77,8 @@ impl std::error::Error for ModelSpecError {}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AssetSpec {
     pub gltf: String,
+    #[serde(default)]
+    pub baked_gltf: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -145,8 +149,6 @@ pub struct RotatingPartSpec {
     pub closed_degrees: f32,
     #[serde(default)]
     pub open_degrees: f32,
-    #[serde(default)]
-    pub degrees_per_second: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +156,7 @@ pub enum MeshGroup {
     Static,
     Lid,
     Cylinder,
+    WindingKey,
     Comb,
     Excluded,
 }
@@ -176,7 +179,6 @@ pub struct PivotPose {
 pub struct MovableModelState {
     pub lid_t: f32,
     pub cylinder_degrees: f32,
-    pub cylinder_spin: bool,
 }
 
 impl Default for MovableModelState {
@@ -184,7 +186,6 @@ impl Default for MovableModelState {
         Self {
             lid_t: 0.0,
             cylinder_degrees: 0.0,
-            cylinder_spin: false,
         }
     }
 }
@@ -217,16 +218,6 @@ impl MovableMusicBoxModel {
 
     pub fn set_cylinder_degrees(&mut self, cylinder_degrees: f32) {
         self.state.cylinder_degrees = cylinder_degrees;
-    }
-
-    pub fn set_cylinder_spin(&mut self, cylinder_spin: bool) {
-        self.state.cylinder_spin = cylinder_spin;
-    }
-
-    pub fn advance(&mut self, dt_seconds: f32) {
-        if self.state.cylinder_spin {
-            self.state.cylinder_degrees += self.spec.cylinder.degrees_per_second * dt_seconds;
-        }
     }
 
     pub fn root_placement(&self, target: [f32; 3], platform_top_y: f32, scale: f32) -> Placement {
@@ -263,6 +254,14 @@ impl MovableMusicBoxModel {
         }
         if self.spec.cylinder.meshes.contains(&mesh_index) {
             return MeshGroup::Cylinder;
+        }
+        if self
+            .spec
+            .winding_key
+            .as_ref()
+            .is_some_and(|key| key.meshes.contains(&mesh_index))
+        {
+            return MeshGroup::WindingKey;
         }
         if self.spec.comb.meshes.contains(&mesh_index) {
             return MeshGroup::Comb;
@@ -307,10 +306,28 @@ impl MovableMusicBoxModel {
         self.pose_to_rig(self.cylinder_pose())
     }
 
+    pub fn winding_key_pose(&self) -> Option<PivotPose> {
+        self.spec.winding_key.as_ref().map(|key| PivotPose {
+            pivot: key.pivot,
+            axis: normalized(key.axis),
+            angle_degrees: key.closed_degrees,
+        })
+    }
+
+    pub fn winding_key_pose_rig(&self) -> Option<PivotPose> {
+        self.winding_key_pose().map(|pose| self.pose_to_rig(pose))
+    }
+
     pub fn relative_translation(&self, translation: [f32; 3], group: MeshGroup) -> [f32; 3] {
         let pivot = match group {
             MeshGroup::Lid => self.spec.lid.pivot,
             MeshGroup::Cylinder => self.spec.cylinder.pivot,
+            MeshGroup::WindingKey => self
+                .spec
+                .winding_key
+                .as_ref()
+                .map(|key| key.pivot)
+                .unwrap_or([0.0, 0.0, 0.0]),
             _ => [0.0, 0.0, 0.0],
         };
         (vec3(translation) - vec3(pivot)).to_array()
@@ -397,7 +414,7 @@ up = [0.0, 1.0, 0.0]
 front = [0.0, 0.0, -1.0]
 
 [closed_model]
-mesh_indices = [0, 1, 2]
+mesh_indices = [0, 1, 2, 3, 4]
 bounds_min = [-1.0, -1.0, -1.0]
 bounds_max = [1.0, 0.0, 1.0]
 body_meshes = [1]
@@ -419,7 +436,13 @@ pivot = [0.0, -0.5, 0.0]
 axis = [0.0, 0.0, 2.0]
 radius = 0.25
 length = 1.5
-degrees_per_second = 120.0
+
+[winding_key]
+meshes = [3, 4]
+pivot = [0.8, -0.5, 0.0]
+axis = [2.0, 0.0, 0.0]
+closed_degrees = 0.0
+open_degrees = 0.0
 
 [comb]
 meshes = [1]
@@ -439,6 +462,8 @@ tine_length = 0.5
         assert_eq!(model.group_for_mesh(0), MeshGroup::Lid);
         assert_eq!(model.group_for_mesh(1), MeshGroup::Comb);
         assert_eq!(model.group_for_mesh(2), MeshGroup::Cylinder);
+        assert_eq!(model.group_for_mesh(3), MeshGroup::WindingKey);
+        assert_eq!(model.group_for_mesh(4), MeshGroup::WindingKey);
         assert_eq!(model.group_for_mesh(99), MeshGroup::Excluded);
     }
 
@@ -459,12 +484,12 @@ tine_length = 0.5
         let spec = ModelSpec::from_toml_str(SPEC).unwrap();
         let mut model = MovableMusicBoxModel::new(spec);
         model.set_lid_t(0.5);
-        model.set_cylinder_spin(true);
-        model.advance(0.25);
+        model.set_cylinder_degrees(30.0);
 
         assert_eq!(model.lid_pose().angle_degrees, 40.0);
         assert_eq!(model.cylinder_pose().angle_degrees, 30.0);
         assert_eq!(model.cylinder_pose().axis, [0.0, 0.0, 1.0]);
+        assert_eq!(model.winding_key_pose().unwrap().axis, [1.0, 0.0, 0.0]);
     }
 
     #[test]

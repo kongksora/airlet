@@ -29,3 +29,6 @@ bevy_egui = { workspace = true }
 rodio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[profile.dev]
+opt-level = 2

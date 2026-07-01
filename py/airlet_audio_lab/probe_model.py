@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -9,11 +10,15 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import trimesh
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from scipy.spatial import cKDTree
 
 
 DEFAULT_MODEL = Path("assets/models/converted/music_box.glb")
 DEFAULT_OUT_DIR = Path("target")
+LID_PRESENTATION_OPEN_DEGREES = -110.0
+FRONT_LATCH_LID_MESHES = [1, 2, 4, 5, 6, 7, 10, 12, 13, 14, 16, 17]
+FRONT_LATCH_INSPECTION_MESHES = [1, 2, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17]
 
 ROLE_COLORS = {
     "body": "#8b4a2f",
@@ -30,10 +35,16 @@ ROLE_COLORS = {
 class MeshProbe:
     node: str
     geometry: str
+    mesh_index: int
     bounds: list[list[float]]
     center: list[float]
     extent: list[float]
     pca_axes: list[list[float]]
+    material_color: list[float] | None
+    material_name: str | None
+    material_base_color: list[float] | None
+    material_metallic: float | None
+    material_roughness: float | None
     cluster: str
     role: str
 
@@ -52,10 +63,17 @@ def main() -> None:
         description="Probe the downloaded music-box GLB and classify model parts."
     )
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--spec",
+        type=Path,
+        default=None,
+        help="Optional model spec TOML used to annotate audit groups.",
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    spec_source = args.spec or args.model.with_name("spec.toml")
     scene = trimesh.load(args.model, force="scene")
     meshes = _collect_meshes(scene)
     labels = _cluster_by_x(meshes)
@@ -75,10 +93,16 @@ def main() -> None:
             MeshProbe(
                 node=mesh["node"],
                 geometry=mesh["geometry"],
+                mesh_index=mesh["mesh_index"],
                 bounds=_round_array(mesh["bounds"]),
                 center=_round_vec(mesh["center"]),
                 extent=_round_vec(mesh["extent"]),
                 pca_axes=mesh["pca_axes"],
+                material_color=mesh["material_color"],
+                material_name=mesh["material"]["name"],
+                material_base_color=mesh["material"]["base_color"],
+                material_metallic=mesh["material"]["metallic"],
+                material_roughness=mesh["material"]["roughness"],
                 cluster=cluster_name,
                 role=role,
             )
@@ -122,20 +146,48 @@ def main() -> None:
         "lid_animation_estimate": hinge,
         "meshes": [asdict(probe) for probe in probes],
     }
+    payload["winding_key_estimate"] = _estimate_winding_key(payload, meshes)
+    lighting_report = _build_lighting_material_report(
+        payload=payload,
+        spec_groups=_load_spec_groups(spec_source),
+        spec_path=spec_source,
+    )
 
     json_path = args.out_dir / "model-probe.json"
     report_path = args.out_dir / "model-probe.md"
     image_path = args.out_dir / "model-probe-debug.png"
+    contact_sheet_path = args.out_dir / "model-closed-mesh-contact-sheet.png"
+    latch_sheet_path = args.out_dir / "model-front-latch-contact-sheet.png"
     spec_path = args.out_dir / "model-spec.toml"
+    lighting_json_path = args.out_dir / "lighting-material-report.json"
+    lighting_report_path = args.out_dir / "lighting-material-report.md"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     report_path.write_text(_render_report(payload), encoding="utf-8")
     spec_path.write_text(_render_spec_draft(payload, meshes), encoding="utf-8")
+    lighting_json_path.write_text(json.dumps(lighting_report, indent=2), encoding="utf-8")
+    lighting_report_path.write_text(
+        _render_lighting_material_report(lighting_report),
+        encoding="utf-8",
+    )
     _render_debug_image(probes, image_path)
+    _render_closed_mesh_contact_sheet(meshes, probes, contact_sheet_path)
+    _render_closed_mesh_contact_sheet(
+        meshes,
+        probes,
+        latch_sheet_path,
+        mesh_indices=FRONT_LATCH_INSPECTION_MESHES,
+        title="Front Latch Mesh Contact Sheet",
+        columns=4,
+    )
 
     print(f"wrote {json_path}")
     print(f"wrote {report_path}")
     print(f"wrote {spec_path}")
+    print(f"wrote {lighting_json_path}")
+    print(f"wrote {lighting_report_path}")
     print(f"wrote {image_path}")
+    print(f"wrote {contact_sheet_path}")
+    print(f"wrote {latch_sheet_path}")
 
 
 def _collect_meshes(scene: trimesh.Scene) -> list[dict[str, Any]]:
@@ -147,18 +199,59 @@ def _collect_meshes(scene: trimesh.Scene) -> list[dict[str, Any]]:
         points = (vertices @ matrix.T)[:, :3]
         bounds = np.array([points.min(axis=0), points.max(axis=0)])
         pca_axes = _pca_axes(points)
+        material = _material_properties(geometry)
         meshes.append(
             {
                 "node": str(node),
                 "geometry": str(geometry_name),
+                "mesh_index": _mesh_index(str(geometry_name)),
                 "points": points,
                 "pca_axes": pca_axes,
                 "bounds": bounds,
                 "center": bounds.mean(axis=0),
                 "extent": bounds[1] - bounds[0],
+                "material": material,
+                "material_color": material["base_color"],
+                "faces": np.array(geometry.faces, dtype=int),
             }
         )
     return meshes
+
+
+def _material_properties(geometry: trimesh.Trimesh) -> dict[str, Any]:
+    material = getattr(geometry.visual, "material", None)
+    if material is None:
+        return {
+            "name": None,
+            "base_color": None,
+            "metallic": None,
+            "roughness": None,
+        }
+    color = _material_base_color(material)
+    return {
+        "name": getattr(material, "name", None),
+        "base_color": color,
+        "metallic": _material_scalar(material, "metallicFactor"),
+        "roughness": _material_scalar(material, "roughnessFactor"),
+    }
+
+
+def _material_base_color(material: Any) -> list[float] | None:
+    color = getattr(material, "baseColorFactor", None)
+    if color is None and hasattr(material, "diffuse"):
+        color = material.diffuse
+    if color is None and hasattr(material, "main_color"):
+        color = material.main_color
+    if color is None:
+        return None
+    return _round_vec(np.array(color, dtype=float)[:4])
+
+
+def _material_scalar(material: Any, name: str) -> float | None:
+    value = getattr(material, name, None)
+    if value is None:
+        return None
+    return round(float(value), 6)
 
 
 def _cluster_by_x(meshes: list[dict[str, Any]]) -> np.ndarray:
@@ -602,6 +695,7 @@ def _render_report(payload: dict[str, Any]) -> str:
         )
 
     estimate = payload["lid_animation_estimate"]
+    winding = payload["winding_key_estimate"]
     lines.extend(
         [
             "## Basis",
@@ -623,6 +717,19 @@ def _render_report(payload: dict[str, Any]) -> str:
             f"- Open angle: `{estimate['open_angle_degrees']}` degrees",
             f"- Note: {estimate['note']}",
             "",
+            "## Winding Key Estimate",
+            "",
+            f"- Status: `{winding['status']}`",
+            f"- Meshes: `{winding['meshes']}`",
+            f"- Pivot: `{winding['pivot']}`",
+            f"- Axis: `{winding['axis']}`",
+            f"- Crank geometries: `{winding['crank_geometries']}`",
+            f"- Moving material color: `{winding['moving_material_color']}`",
+            f"- Fit point geometries: `{winding['fit_point_geometries']}`",
+            f"- Fit points: `{winding['fit_points']}`",
+            f"- Axis source: `{winding['axis_source']}`",
+            f"- Note: {winding['note']}",
+            "",
             "## Closed Mesh Roles",
             "",
             "| role | geometry | center | extent |",
@@ -639,6 +746,184 @@ def _render_report(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _load_spec_groups(path: Path) -> dict[int, list[str]]:
+    if not path.exists():
+        return {}
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    groups: dict[int, list[str]] = {}
+    for section_name, section in data.items():
+        if not isinstance(section, dict):
+            continue
+        for key, value in section.items():
+            if not key.endswith("meshes") and key != "mesh_indices":
+                continue
+            if not isinstance(value, list):
+                continue
+            label = f"{section_name}.{key}"
+            for item in value:
+                if isinstance(item, int):
+                    groups.setdefault(item, []).append(label)
+    return groups
+
+
+def _build_lighting_material_report(
+    *,
+    payload: dict[str, Any],
+    spec_groups: dict[int, list[str]],
+    spec_path: Path,
+) -> dict[str, Any]:
+    meshes = []
+    for mesh in sorted(payload["meshes"], key=lambda item: item["mesh_index"]):
+        material = {
+            "name": mesh["material_name"],
+            "base_color": mesh["material_base_color"],
+            "metallic": mesh["material_metallic"],
+            "roughness": mesh["material_roughness"],
+        }
+        meshes.append(
+            {
+                "mesh_index": mesh["mesh_index"],
+                "name": mesh["geometry"],
+                "node": mesh["node"],
+                "group": mesh["cluster"],
+                "spec_groups": spec_groups.get(mesh["mesh_index"], []),
+                "role": mesh["role"],
+                "material": material,
+                "bounds": mesh["bounds"],
+                "center": mesh["center"],
+                "extent": mesh["extent"],
+            }
+        )
+
+    return {
+        "model": payload["model"],
+        "source_spec": str(spec_path) if spec_path.exists() else None,
+        "mesh_count": len(meshes),
+        "material_summary": _summarize_materials(meshes),
+        "role_summary": _summarize_roles(meshes),
+        "meshes": meshes,
+    }
+
+
+def _summarize_materials(meshes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for mesh in meshes:
+        material = mesh["material"]
+        key = json.dumps(material, sort_keys=True)
+        summary = summaries.setdefault(
+            key,
+            {
+                "material": material,
+                "mesh_count": 0,
+                "roles": {},
+                "groups": {},
+                "mesh_indices": [],
+            },
+        )
+        summary["mesh_count"] += 1
+        summary["mesh_indices"].append(mesh["mesh_index"])
+        summary["roles"][mesh["role"]] = summary["roles"].get(mesh["role"], 0) + 1
+        summary["groups"][mesh["group"]] = summary["groups"].get(mesh["group"], 0) + 1
+    return sorted(
+        summaries.values(),
+        key=lambda item: (-item["mesh_count"], item["mesh_indices"][0]),
+    )
+
+
+def _summarize_roles(meshes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for mesh in meshes:
+        summary = summaries.setdefault(
+            mesh["role"],
+            {
+                "role": mesh["role"],
+                "mesh_count": 0,
+                "groups": {},
+                "materials": {},
+                "mesh_indices": [],
+            },
+        )
+        material_key = _material_label(mesh["material"])
+        summary["mesh_count"] += 1
+        summary["mesh_indices"].append(mesh["mesh_index"])
+        summary["groups"][mesh["group"]] = summary["groups"].get(mesh["group"], 0) + 1
+        summary["materials"][material_key] = summary["materials"].get(material_key, 0) + 1
+    return sorted(summaries.values(), key=lambda item: (-item["mesh_count"], item["role"]))
+
+
+def _render_lighting_material_report(report: dict[str, Any]) -> str:
+    lines = [
+        "# Airlet Lighting Material Audit",
+        "",
+        f"- Model: `{report['model']}`",
+        f"- Source spec: `{report['source_spec']}`",
+        f"- Meshes: {report['mesh_count']}",
+        "",
+        "## Material Summary",
+        "",
+        "| material | base color | metallic | roughness | meshes | roles | groups |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for item in report["material_summary"]:
+        material = item["material"]
+        lines.append(
+            "| "
+            f"`{_material_label(material)}` | "
+            f"`{material['base_color']}` | "
+            f"`{material['metallic']}` | "
+            f"`{material['roughness']}` | "
+            f"`{item['mesh_indices']}` | "
+            f"`{item['roles']}` | "
+            f"`{item['groups']}` |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Role Summary",
+            "",
+            "| role | meshes | groups | materials |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    for item in report["role_summary"]:
+        lines.append(
+            f"| {item['role']} | `{item['mesh_indices']}` | `{item['groups']}` | `{item['materials']}` |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Mesh Audit",
+            "",
+            "| index | name | group | spec groups | role | material | base color | metallic | roughness |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for mesh in report["meshes"]:
+        material = mesh["material"]
+        lines.append(
+            "| "
+            f"{mesh['mesh_index']} | "
+            f"`{mesh['name']}` | "
+            f"{mesh['group']} | "
+            f"`{mesh['spec_groups']}` | "
+            f"{mesh['role']} | "
+            f"`{_material_label(material)}` | "
+            f"`{material['base_color']}` | "
+            f"`{material['metallic']}` | "
+            f"`{material['roughness']}` |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _material_label(material: dict[str, Any]) -> str:
+    if material["name"]:
+        return str(material["name"])
+    return "<unnamed>"
+
+
 def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]) -> str:
     closed = [mesh for mesh in payload["meshes"] if mesh["cluster"] == "closed"]
     roles = {
@@ -653,7 +938,12 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
         cylinder_meshes = mechanism_sorted[:4] if len(mechanism_sorted) >= 4 else mechanism_sorted
     estimate = payload["lid_animation_estimate"]
     moving_hinges = [int(index) for index in estimate["moving_hinge_meshes"]]
-    lid_meshes = sorted(set(roles["lid"] + moving_hinges))
+    lid_latch_meshes = [
+        index
+        for index in FRONT_LATCH_LID_MESHES
+        if any(int(_mesh_index(mesh["geometry"])) == index for mesh in closed)
+    ]
+    lid_meshes = sorted(set(roles["lid"] + moving_hinges + lid_latch_meshes))
     closed_cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
     cylinder_geometry = _cylinder_geometry(
         raw_meshes,
@@ -665,9 +955,12 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
         [int(_mesh_index(mesh["geometry"])) for mesh in closed],
         cylinder_geometry,
     )
+    winding_key = payload["winding_key_estimate"]
+    winding_key_meshes = [int(mesh) for mesh in winding_key["meshes"]]
     body = sorted(
         set(roles["body"] + roles["handle"] + roles["mechanism"] + unknown)
         - set(cylinder_meshes)
+        - set(winding_key_meshes)
         - set(comb_geometry["meshes"])
         - set(lid_meshes)
     )
@@ -697,7 +990,7 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
             f"pivot = {_toml_list(estimate['pivot'])}",
             f"axis = {_toml_list(estimate['axis'])}",
             f"closed_degrees = {estimate['closed_angle_degrees']}",
-            f"open_degrees = {estimate['open_angle_degrees']}",
+            f"open_degrees = {LID_PRESENTATION_OPEN_DEGREES}",
             "",
             "[cylinder]",
             f"meshes = {_toml_list(cylinder_meshes)}",
@@ -705,7 +998,13 @@ def _render_spec_draft(payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
             f"axis = {_toml_list(cylinder_geometry['axis'])}",
             f"radius = {cylinder_geometry['radius']}",
             f"length = {cylinder_geometry['length']}",
-            "degrees_per_second = 120.0",
+            "",
+            "[winding_key]",
+            f"meshes = {_toml_list(winding_key_meshes)}",
+            f"pivot = {_toml_list(winding_key['pivot'])}",
+            f"axis = {_toml_list(winding_key['axis'])}",
+            "closed_degrees = 0.0",
+            "open_degrees = 0.0",
             "",
             "[comb]",
             f"meshes = {_toml_list(comb_geometry['meshes'])}",
@@ -725,6 +1024,203 @@ def _mesh_index(geometry: str) -> int:
     if geometry == "Mesh":
         return 0
     return int(geometry.split(".", 1)[1])
+
+
+def _estimate_winding_key(
+    payload: dict[str, Any], raw_meshes: list[dict[str, Any]]
+) -> dict[str, Any]:
+    closed = [mesh for mesh in payload["meshes"] if mesh["cluster"] == "closed"]
+    handle_candidates = [mesh for mesh in closed if mesh["role"] == "handle"]
+    if handle_candidates:
+        search_anchor = max(
+            handle_candidates,
+            key=lambda mesh: mesh["extent"][0] * mesh["extent"][1] * mesh["extent"][2],
+        )
+        status = "complete_crank_from_handle_and_frame_fits"
+    else:
+        cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
+        center = np.array(cluster["center"], dtype=float)
+        candidates = []
+        for mesh in closed:
+            mesh_center = np.array(mesh["center"], dtype=float)
+            horizontal_offset = mesh_center - center
+            horizontal_offset[1] = 0.0
+            candidates.append((float(np.linalg.norm(horizontal_offset)), mesh))
+        _, search_anchor = max(candidates, key=lambda item: item[0])
+        status = "outermost_closed_mesh_fallback"
+
+    closed_cluster = next(cluster for cluster in payload["clusters"] if cluster["name"] == "closed")
+    anchor_center = np.array(search_anchor["center"], dtype=float)
+    fit = _winding_frame_fit_points(closed, anchor_center)
+    fit_midpoint = None
+    if fit is not None:
+        fit_points = fit["points"]
+        fit_midpoint = np.mean(np.array(fit_points, dtype=float), axis=0)
+        axis = np.array(fit_points[1], dtype=float) - np.array(fit_points[0], dtype=float)
+        axis = axis / np.linalg.norm(axis)
+        axis_source = "frame_fit_points"
+        fit_point_geometries = fit["geometries"]
+    else:
+        raw = _mesh_by_geometry(raw_meshes, search_anchor["geometry"])
+        fit_midpoint = np.array(raw["center"], dtype=float)
+        axis = _horizontal_axis_from_pca(raw["pca_axes"])
+        axis_source = "handle_pca_fallback"
+        fit_points = []
+        fit_point_geometries = []
+    basis_right = np.array(payload["basis"]["right"], dtype=float)
+    if axis @ basis_right < 0.0:
+        axis = -axis
+
+    pivot = fit_midpoint
+    crank_meshes = _winding_crank_meshes(closed, search_anchor, pivot, axis, fit_point_geometries)
+    shaft_mesh = _winding_shaft_mesh(crank_meshes, raw_meshes, fit_midpoint)
+    if shaft_mesh is not None:
+        raw_shaft = _mesh_by_geometry(raw_meshes, shaft_mesh["geometry"])
+        pivot = np.array(raw_shaft["points"], dtype=float).mean(axis=0)
+        pivot_source = f"{shaft_mesh['geometry']}_point_cloud_center"
+    else:
+        pivot = fit_midpoint
+        pivot_source = "frame_fit_midpoint"
+    crank_indices = sorted(int(_mesh_index(mesh["geometry"])) for mesh in crank_meshes)
+    crank_geometries = [mesh["geometry"] for mesh in sorted(crank_meshes, key=lambda m: _mesh_index(m["geometry"]))]
+
+    return {
+        "status": status,
+        "meshes": crank_indices,
+        "pivot": _round_vec(pivot),
+        "axis": _round_vec(axis),
+        "crank_geometries": crank_geometries,
+        "moving_material_color": search_anchor.get("material_color"),
+        "fit_point_geometries": fit_point_geometries,
+        "fit_points": [_round_vec(point) for point in fit_points],
+        "axis_source": axis_source,
+        "pivot_source": pivot_source,
+        "note": "Crank mesh set includes the handle, bent arm, and shaft. Axis direction is derived from frame-side fit points when available; pivot is placed on the moving shaft center line to avoid eccentric shaft motion.",
+    }
+
+
+def _winding_frame_fit_points(
+    closed: list[dict[str, Any]], handle_center: np.ndarray
+) -> dict[str, Any] | None:
+    candidates = []
+    for mesh in closed:
+        center = np.array(mesh["center"], dtype=float)
+        extent = np.array(mesh["extent"], dtype=float)
+        if mesh["role"] not in {"mechanism", "unknown"}:
+            continue
+        if extent[1] > 0.008:
+            continue
+        if center[2] < handle_center[2] - 0.02 or center[2] > handle_center[2] + 0.25:
+            continue
+        if center[0] < handle_center[0] - 0.45 or center[0] > handle_center[0] - 0.12:
+            continue
+        candidates.append(mesh)
+    if len(candidates) < 2:
+        return None
+
+    clusters: list[dict[str, Any]] = []
+    for mesh in sorted(candidates, key=lambda item: item["geometry"]):
+        center = np.array(mesh["center"], dtype=float)
+        for cluster in clusters:
+            if np.linalg.norm(center - cluster["center"]) < 0.012:
+                cluster["meshes"].append(mesh)
+                cluster["center"] = np.mean(
+                    np.array([item["center"] for item in cluster["meshes"]], dtype=float),
+                    axis=0,
+                )
+                break
+        else:
+            clusters.append({"center": center, "meshes": [mesh]})
+    if len(clusters) < 2:
+        return None
+
+    best_pair = None
+    best_distance = 0.0
+    for index, left in enumerate(clusters):
+        for right in clusters[index + 1 :]:
+            delta = right["center"] - left["center"]
+            delta[1] = 0.0
+            distance = float(np.linalg.norm(delta))
+            if distance > best_distance:
+                best_distance = distance
+                best_pair = (left, right)
+    if best_pair is None or best_distance <= 1e-6:
+        return None
+
+    points = [best_pair[0]["center"], best_pair[1]["center"]]
+    geometries = [
+        mesh["geometry"]
+        for cluster in best_pair
+        for mesh in sorted(cluster["meshes"], key=lambda item: _mesh_index(item["geometry"]))
+    ]
+    return {"points": points, "geometries": geometries}
+
+
+def _winding_crank_meshes(
+    closed: list[dict[str, Any]],
+    anchor: dict[str, Any],
+    pivot: np.ndarray,
+    axis: np.ndarray,
+    fit_point_geometries: list[str],
+) -> list[dict[str, Any]]:
+    anchor_center = np.array(anchor["center"], dtype=float)
+    target_color = anchor.get("material_color")
+    result = {anchor["geometry"]: anchor}
+    for mesh in closed:
+        geometry = mesh["geometry"]
+        center = np.array(mesh["center"], dtype=float)
+        extent = np.array(mesh["extent"], dtype=float)
+        if not _material_color_matches(mesh.get("material_color"), target_color):
+            continue
+        if mesh["role"] != "mechanism":
+            continue
+        distance_to_anchor = float(np.linalg.norm(center - anchor_center))
+        radial_to_axis = center - pivot - axis * ((center - pivot) @ axis)
+        distance_to_axis = float(np.linalg.norm(radial_to_axis))
+        between_handle_and_axis = (
+            min(anchor_center[0], pivot[0]) - 0.05 <= center[0] <= max(anchor_center[0], pivot[0]) + 0.05
+            and min(anchor_center[2], pivot[2]) - 0.08 <= center[2] <= max(anchor_center[2], pivot[2]) + 0.08
+        )
+        near_side_crank_height = center[1] <= anchor_center[1] + 0.075
+        if (
+            between_handle_and_axis
+            and near_side_crank_height
+            and distance_to_anchor < 0.40
+            and distance_to_axis < 0.18
+        ):
+            if extent[0] > 0.04 or extent[2] > 0.04:
+                result[geometry] = mesh
+    return list(result.values())
+
+
+def _winding_shaft_mesh(
+    crank_meshes: list[dict[str, Any]],
+    raw_meshes: list[dict[str, Any]],
+    reference_point: np.ndarray,
+) -> dict[str, Any] | None:
+    candidates = []
+    for mesh in crank_meshes:
+        if mesh["role"] != "mechanism":
+            continue
+        raw = _mesh_by_geometry(raw_meshes, mesh["geometry"])
+        center = np.array(raw["points"], dtype=float).mean(axis=0)
+        extent = np.array(mesh["extent"], dtype=float)
+        distance = float(np.linalg.norm(center - reference_point))
+        compactness = float(np.prod(extent))
+        candidates.append((distance, compactness, mesh))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: (item[0], item[1]))[2]
+
+
+def _material_color_matches(
+    color: list[float] | None, target_color: list[float] | None
+) -> bool:
+    if color is None or target_color is None:
+        return False
+    color_vec = np.array(color[:3], dtype=float)
+    target_vec = np.array(target_color[:3], dtype=float)
+    return float(np.linalg.norm(color_vec - target_vec)) <= 12.0
 
 
 def _horizontal_axis_from_pca(pca_axes: list[list[float]]) -> np.ndarray:
@@ -972,6 +1468,88 @@ def _render_debug_image(probes: list[MeshProbe], path: Path) -> None:
     fig.tight_layout()
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
+
+def _render_closed_mesh_contact_sheet(
+    meshes: list[dict[str, Any]],
+    probes: list[MeshProbe],
+    path: Path,
+    *,
+    mesh_indices: list[int] | None = None,
+    title: str = "Closed Model Mesh Contact Sheet",
+    columns: int = 6,
+) -> None:
+    closed_probes = sorted(
+        [probe for probe in probes if probe.cluster == "closed"],
+        key=lambda probe: probe.mesh_index,
+    )
+    if mesh_indices is not None:
+        selected_indices = set(mesh_indices)
+        closed_probes = [probe for probe in closed_probes if probe.mesh_index in selected_indices]
+    closed_meshes = {
+        _mesh_index(mesh["geometry"]): mesh
+        for mesh in meshes
+        if any(probe.mesh_index == _mesh_index(mesh["geometry"]) for probe in closed_probes)
+    }
+    if not closed_probes:
+        return
+
+    bounds = _combined_bounds([closed_meshes[probe.mesh_index]["bounds"] for probe in closed_probes])
+    center = bounds.mean(axis=0)
+    radius = float(np.linalg.norm(bounds[1] - bounds[0]) * 0.56)
+    rows = int(np.ceil(len(closed_probes) / columns))
+    fig = plt.figure(figsize=(columns * 3.1, rows * 2.7))
+    context_faces = [
+        _mesh_triangles(closed_meshes[probe.mesh_index], stride=3)
+        for probe in closed_probes
+    ]
+
+    for slot, probe in enumerate(closed_probes, start=1):
+        ax = fig.add_subplot(rows, columns, slot, projection="3d")
+        ax.set_proj_type("persp")
+        ax.view_init(elev=25, azim=-58)
+        ax.set_xlim(center[0] - radius, center[0] + radius)
+        ax.set_ylim(center[2] - radius, center[2] + radius)
+        ax.set_zlim(center[1] - radius * 0.7, center[1] + radius * 0.7)
+        ax.set_box_aspect((1.0, 1.0, 0.7))
+        ax.set_axis_off()
+        for triangles in context_faces:
+            if len(triangles) == 0:
+                continue
+            ax.add_collection3d(
+                Poly3DCollection(
+                    triangles,
+                    facecolors=(0.38, 0.38, 0.38, 0.055),
+                    edgecolors=(0.12, 0.12, 0.12, 0.05),
+                    linewidths=0.1,
+                )
+            )
+        selected = _mesh_triangles(closed_meshes[probe.mesh_index])
+        if len(selected) > 0:
+            ax.add_collection3d(
+                Poly3DCollection(
+                    selected,
+                    facecolors=(1.0, 0.77, 0.16, 0.94),
+                    edgecolors=(0.05, 0.04, 0.02, 0.55),
+                    linewidths=0.25,
+                )
+            )
+        title = f"{probe.mesh_index:02d} {probe.geometry}\n{probe.role}"
+        ax.set_title(title, fontsize=8, pad=0)
+
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout(pad=0.2)
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def _mesh_triangles(mesh: dict[str, Any], stride: int = 1) -> list[np.ndarray]:
+    points = np.asarray(mesh["points"], dtype=float)
+    faces = np.asarray(mesh["faces"], dtype=int)
+    if stride > 1 and len(faces) > 0:
+        faces = faces[::stride]
+    triangles = points[faces]
+    return [triangle[:, [0, 2, 1]] for triangle in triangles]
 
 
 def _draw_box(ax: Any, bounds: np.ndarray, color: str, alpha: float) -> None:

@@ -14,12 +14,16 @@ dependencies = [
 
 [project.scripts]
 airlet-analyze-reference = "airlet_audio_lab.analyze_reference:main"
+airlet-build-aligned-base = "airlet_audio_lab.build_aligned_base_model:main"
 airlet-debug = "airlet_audio_lab.debug_client:main"
-airlet-comb-motion-sequence = "airlet_audio_lab.comb_motion_sequence:main"
+airlet-bake-materials = "airlet_audio_lab.bake_materials:main"
+airlet-generate-textures = "airlet_audio_lab.generate_textures:main"
+airlet-lighting-shots = "airlet_audio_lab.lighting_shots:main"
 airlet-mcp = "airlet_audio_lab.mcp_server:main"
 airlet-probe-model = "airlet_audio_lab.probe_model:main"
 airlet-render-air-probe = "airlet_audio_lab.render_air_probe:main"
 airlet-synth-probe = "airlet_audio_lab.synth_probe:main"
+airlet-wood-preset-gallery = "airlet_audio_lab.wood_preset_gallery:main"
 
 [build-system]
 requires = ["setuptools>=80.0"]
