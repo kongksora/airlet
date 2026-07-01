@@ -31,7 +31,7 @@ def main() -> None:
     for obj in bpy.context.scene.objects:
         if obj.type != "MESH" or obj.data.name not in WOOD_MESH_NAMES:
             continue
-        bounds_min, bounds_max = adjusted_shell_bounds(local_bounds(obj))
+        bounds_min, bounds_max = local_bounds(obj)
         old_materials = list(obj.data.materials)
         mesh_name = obj.data.name
         if mesh_name == "Mesh":
@@ -83,17 +83,6 @@ def local_bounds(obj) -> tuple[tuple[float, float, float], tuple[float, float, f
         max_corner.y = max(max_corner.y, coord.y)
         max_corner.z = max(max_corner.z, coord.z)
     return tuple(min_corner), tuple(max_corner)
-
-
-def adjusted_shell_bounds(
-    bounds: tuple[tuple[float, float, float], tuple[float, float, float]]
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    bounds_min, bounds_max = bounds
-    x0, y0, z0 = bounds_min
-    x1, y1, z1 = bounds_max
-    depth = y1 - y0
-    hardware_clearance = depth * 0.08
-    return (x0, y0 + hardware_clearance, z0), (x1, y1 - hardware_clearance, z1)
 
 
 def place_scene_meshes_on_origin_ground(bpy) -> tuple[float, float, float]:

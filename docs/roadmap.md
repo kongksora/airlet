@@ -3913,30 +3913,29 @@ Completion notes:
 - `Mesh.008` validation after boolean: 112 vertices, 80 polygons, 0 boundary
   edges, 0 non-manifold edges.
 
-### Blender Handoff Shell Size And Hardware Clearance Fix
+### Blender Handoff Shell Size Source Correction
 
-Purpose: correct the manual bevel base dimensions after visual inspection showed
-the simplified lid/body shells were derived from raw wood mesh bounds and could
-cover hinge or front-lock hardware that should remain visibly mounted outside
-the shell.
+Purpose: keep the manual bevel base dimensions tied to the original wood shell
+meshes. Hardware such as hinges, front locks, and the crank may validate
+clearance and openings, but must not decide the lid/body outer dimensions.
 
 Checklist:
 
-- [x] Measure current handoff wood shell bounds against nearby hinge/front-lock
-  mesh bounds to identify which axes are over-extended.
-- [x] Stop using raw wood mesh bounds as the only shell size source when they
-  swallow nearby hardware.
-- [x] Regenerate the handoff `.blend` with shell dimensions/clearances that keep
-  hinge and front-lock parts visible.
+- [x] Remove the hardware-driven front/back shell shrink from the Blender
+  handoff builder.
+- [x] Use only the original wood mesh bounds for simplified lid/body shell
+  dimensions.
+- [x] Regenerate the handoff `.blend` with original wood-shell dimensions.
 - [x] Preserve the bottom-face-center origin placement and round crank entry.
-- [x] Validate with geometry probes and update the handoff README.
+- [x] Validate with geometry probes that the regenerated shell bounds match the
+  wood mesh source bounds.
 - [x] Run Python compile validation and `git diff --check`.
 
 Completion notes:
 
-- The oversized dimensions came from using the imported wood mesh bounds
-  directly in `py/airlet_audio_lab/build_manual_bevel_handoff.py`.
-- Added front/back shell clearance in Blender `Y` so front-lock meshes sit
-  outside the shell front and hinge meshes sit outside the shell back.
-- Regenerated the handoff `.blend`; front-lock samples now extend in front of
-  the wood shell, and rear hinge samples extend behind it.
+- The previous hardware-clearance shrink was removed. It was conceptually wrong
+  because hinges/front locks are not valid sources for wood-shell dimensions.
+- `py/airlet_audio_lab/build_manual_bevel_handoff.py` now uses the imported
+  wood mesh bounds directly for `Mesh` and `Mesh.008`.
+- Hardware remains useful only for validating fit and for locating functional
+  openings such as the crank hole.
