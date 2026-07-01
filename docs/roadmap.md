@@ -4012,3 +4012,29 @@ Completion notes:
   dimensions `[0.59205, 0.525857, 0.190378]` at `13.648449` degrees.
 - The generated `.blend` keeps the full assembly bottom center at the Blender
   origin and has no overused/non-manifold wood edges.
+
+### Blender Handoff Wood Angle Snap
+
+Purpose: preserve original wood geometry dimensions while snapping the source
+wood shell's horizontal OBB axes to the aligned handoff coordinate frame, so the
+shell no longer carries source residual yaw relative to the mechanism context.
+
+Checklist:
+
+- [x] Rotate source wood vertices from their source OBB frame into the handoff
+  canonical `X/Y` frame while preserving OBB dimensions and local details.
+- [x] Regenerate the manual bevel `.blend`.
+- [x] Validate that `Mesh` and `Mesh.008` source OBB metadata angles are near
+  `0` degrees after snapping, with expected source dimensions preserved.
+- [x] Validate bottom-face-center origin placement and run Python compile plus
+  `git diff --check`.
+
+Completion notes:
+
+- Source wood vertices are transformed through their source OBB local frame and
+  reconstructed on canonical handoff `X/Y` axes.
+- Regenerated `.blend` validation: `Mesh` dimensions
+  `[0.524995, 0.429649, 0.083748]` at `0.0` degrees; `Mesh.008` dimensions
+  `[0.59205, 0.525857, 0.190378]` at `0.0` degrees.
+- The full assembly bottom center remains at the Blender origin, and wood mesh
+  edges have no overused/non-manifold edges.

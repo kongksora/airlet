@@ -150,7 +150,13 @@ def source_wood_meshes_from_blender(bpy, source_path: Path, source_spec: dict) -
             for vertex in obj.data.vertices
         ]
         faces = [tuple(poly.vertices) for poly in obj.data.polygons]
-        result[mesh_name] = SourceWoodMesh(vertices, faces, oriented_bounds_from_points(vertices))
+        bounds = oriented_bounds_from_points(vertices)
+        snapped_vertices = snap_points_to_handoff_axes(vertices, bounds)
+        result[mesh_name] = SourceWoodMesh(
+            snapped_vertices,
+            faces,
+            oriented_bounds_from_points(snapped_vertices),
+        )
     return result
 
 
@@ -216,6 +222,17 @@ def oriented_bounds_from_points(points: list[tuple[float, float, float]]) -> Ori
     min_corner = tuple(min(point[index] for point in local) for index in range(3))
     max_corner = tuple(max(point[index] for point in local) for index in range(3))
     return OrientedShellBounds((center_x, center_y), axis_x, axis_y, min_corner, max_corner)
+
+
+def snap_points_to_handoff_axes(
+    points: list[tuple[float, float, float]],
+    bounds: OrientedShellBounds,
+) -> list[tuple[float, float, float]]:
+    snapped = []
+    for point in points:
+        local = bounds.local_point(point)
+        snapped.append((bounds.origin[0] + local[0], bounds.origin[1] + local[1], local[2]))
+    return snapped
 
 
 def normalize3(vector: tuple[float, float, float]) -> tuple[float, float, float]:
