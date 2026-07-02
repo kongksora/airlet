@@ -12,6 +12,7 @@ use bevy::{
     picking::prelude::MeshPickingCamera,
     prelude::*,
 };
+use bevy_egui::input::EguiWantsInput;
 
 use crate::controls::ExhibitControls;
 use crate::lighting::{ExhibitLightingConfig, TextureMaterialClass, apply_texture_class};
@@ -212,10 +213,15 @@ pub fn setup_scene(
 
 pub fn orbit_camera(
     mut controls: ResMut<ExhibitControls>,
+    egui_wants_input: Res<EguiWantsInput>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mouse_motion: Res<AccumulatedMouseMotion>,
     mouse_scroll: Res<AccumulatedMouseScroll>,
 ) {
+    if egui_wants_input.wants_any_pointer_input() {
+        return;
+    }
+
     if mouse_buttons.pressed(MouseButton::Right) {
         controls.yaw -= mouse_motion.delta.x * 0.006;
         controls.pitch = (controls.pitch + mouse_motion.delta.y * 0.004)

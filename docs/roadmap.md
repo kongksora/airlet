@@ -4525,7 +4525,7 @@ Completion notes:
   is now a marker component, and the outline shell is shown from hover/pressed
   state.
 - Lid hover uses the same outline shell mechanism; left click on a hovered lid
-  toggles `lid_t` between closed and open endpoints.
+  now submits an interruptible lid toggle command to `LidState`.
 - The shared outline material uses an inverted-hull shell (`cull_mode =
   Face::Front`) with a warm emissive outline color.
 - Outline shells now scale around each mesh's local AABB center rather than the
@@ -4566,6 +4566,90 @@ Completion notes:
   while normal outward-wound meshes keep front-face culling.
 - Removed the lid-only frame mesh generator and frame material, so the outline
   system has one geometry strategy again.
+- Validation passed: `cargo fmt --all`, `cargo check --workspace`,
+  `cargo test --workspace`, and `git diff --check`.
+
+### Debug Panel And Mechanical Sound Console
+
+Purpose: promote the control panel from a product-like control strip to a
+debug console that exposes digital-twin state, lid state, mechanical event
+traffic, and mechanical sound hooks for tuning and validation.
+
+Checklist:
+
+- [x] Add runtime mechanical audio configuration for master volume, per-sound
+  gains, mute flags, frequency scale, roughness, and decay scaling.
+- [x] Add mechanical event statistics and a bounded recent-event log that the
+  panel can inspect without scraping logs.
+- [x] Add audition hooks for lid impacts, winding motion, cylinder motion, and
+  tooth/comb contact so sounds can be tested without driving the model.
+- [x] Expand the debug panel with Twin, Lid, Winding, Mechanical Events,
+  Mechanical Audio, Audio Core, Lighting, and Camera sections.
+- [x] Expose debug-only state setters for spring energy, mechanical time, key
+  angle, lid target/speed, winding press state, event mute/solo, and audio stop
+  controls.
+- [x] Validate with formatting, Rust checks/tests, `git diff --check`,
+  screenshot inspection, commit, and push.
+
+Completion notes:
+
+- Added `MechanicalAudioConfig` for enabled/master/per-sound gains, mute/solo
+  groups, frequency scale, roughness scale, and decay scale.
+- Added `MechanicalEventStats` and a bounded recent-event list so the panel can
+  inspect event traffic directly. Event stats record lid, winding, cylinder,
+  and tooth/comb categories.
+- Added `MechanicalAuditionQueue`; the debug panel can trigger lid close hit,
+  lid open stop, winding/release, cylinder, and tooth scrape events without
+  physically driving the model.
+- `control_panel` now uses a `ControlPanelParams` `SystemParam` and a scrollable
+  debug console layout with Transport/Twin, Lid, Winding, Mechanical Events,
+  Mechanical Audio, Audio Core, Spotlight, Studio Lights, Ambient/IBL, Camera,
+  Model/Picking/Outline, and Developer Utilities sections.
+- Debug-only controls now expose spring energy, key angle, mechanical time,
+  lid target/speed, winding hover/press, max spring energy, audio stop buttons,
+  event counters, sound audition buttons, mute/solo, and screenshot capture.
+- Bevy 3D input is blocked while egui wants pointer input: camera orbit/zoom
+  returns early, lid click toggles are ignored, and winding cannot start from a
+  panel click while still allowing an existing winding press to release.
+- Screenshot validation passed with
+  `AIRLET_SCREENSHOT=target/debug-console-expanded.png cargo run`;
+  image stats: `1280x800`, mean `0.128652`, max `65535`.
+- Input-block screenshot validation passed with
+  `AIRLET_SCREENSHOT=target/debug-console-egui-input-block.png cargo run`;
+  image stats: `1280x800`, mean `0.128639`, max `65535`.
+- Validation passed: `cargo fmt --all`, `cargo check --workspace`,
+  `cargo test --workspace`, and `git diff --check`.
+
+### Control Panel Refactor
+
+Purpose: split the egui control panel into cohesive sections now that lid,
+winding, twin, and mechanical audio state are no longer simple top-level
+control fields.
+
+Checklist:
+
+- [x] Keep `ExhibitControls` as the top-level display/control resource for
+  camera, lighting, audio mix, playback command, and cylinder override only.
+- [x] Split the UI drawing path into performance, mechanical, spotlight,
+  studio-light, ambient/IBL, and camera sections.
+- [x] Keep lid controls routed through `LidState`, not through a legacy
+  controls-owned `lid_t`.
+- [x] Preserve existing playback, lighting, camera, and timeline controls.
+- [x] Validate with formatting, Rust checks/tests, `git diff --check`, and a
+  screenshot of the refactored panel.
+
+Completion notes:
+
+- `control_panel` is now a thin egui window wrapper that delegates to
+  `draw_performance_panel`, `draw_mechanical_panel`,
+  `draw_spotlight_panel`, `draw_studio_lights_panel`,
+  `draw_ambient_panel`, and `draw_camera_panel`.
+- The mechanical panel owns lid/winding/twin display and routes the lid slider
+  directly to `LidState::set_manual`; no controls-owned `lid_t` state was
+  reintroduced.
+- Screenshot validation passed with
+  `AIRLET_SCREENSHOT=target/control-panel-refactor.png cargo run`;
+  image stats: `1280x800`, mean `0.12799`, max `65535`.
 - Validation passed: `cargo fmt --all`, `cargo check --workspace`,
   `cargo test --workspace`, and `git diff --check`.
 
@@ -4643,3 +4727,52 @@ Completion notes:
 - Verified regeneration from tracked inputs with
   `uv run --project py airlet-bake-materials --manual-rounded-source
   assets/generated/music_box_manual_rounded_shell.glb`.
+
+### Mechanical Motion Events And Lid Audio Hooks
+
+Purpose: make lid animation interruptible and expose reusable mechanical sound
+hooks for lid motion, winding-key motion, cylinder motion, and tooth/comb
+contact without tying sounds to UI buttons, debug actions, or separate hard
+coded tracks.
+
+Checklist:
+
+- [x] Add a lid state machine with closed/open/opening/closing/manual states,
+  current angle parameter, target parameter, velocity, and interruptible toggle
+  commands.
+- [x] Route lid click, UI slider, and debug `set_lid` through the same lid
+  state update path so all lid motion emits the same event stream.
+- [x] Add a mechanical event layer that derives events from state deltas after
+  simulation, including lid motion, lid endpoint impacts, winding-key motion,
+  cylinder motion, and tooth/comb contact.
+- [x] Add mechanical audio hooks that subscribe to mechanical events through the
+  existing rodio output path without changing the score/performance audio
+  scheduling semantics.
+- [x] Keep winding/full-wind/pause/exhaustion behavior intact and avoid sound
+  emission when there is no real mechanical motion.
+- [x] Validate with focused Rust tests, `cargo fmt --all`,
+  `cargo check --workspace`, `cargo test --workspace`, and `git diff --check`.
+
+Completion notes:
+
+- Added `src/lid.rs` with `LidState`, `LidMode`, interruptible `toggle`,
+  `open`, `close`, `set_manual`, and per-frame integration. Closed/closing
+  toggles open; open/opening toggles closed; manual angle changes use the same
+  state container.
+- Removed the old bare `ExhibitControls::lid_t` state. Lid click, UI slider,
+  and debug `set_lid` now all write `LidState`; debug state reports a `lid`
+  object with mode, current `t`, target, velocity, and max speed.
+- Added `src/mechanical_audio.rs` with `MechanicalEventQueue`,
+  `MechanicalEventState`, and typed events for lid motion, lid closed/opened
+  endpoints, winding-key motion, cylinder motion, and tooth/comb contact.
+- Mechanical events are derived from post-simulation state deltas, so sounds
+  follow actual motion instead of the UI/debug source that caused the motion.
+- Mechanical audio hooks use the existing rodio device: lid, winding key, and
+  cylinder use one continuous lane each; lid endpoint and tooth/comb contact
+  use bounded transient players. Continuous lanes append frame-sized chunks
+  rather than starting a new player per frame.
+- Screenshot smoke test passed with
+  `AIRLET_SCREENSHOT=target/mechanical-events-smoke.png cargo run`;
+  image stats: `1280x800`, mean `0.126868`, max `65535`.
+- Validation passed: `cargo fmt --all`, `cargo check --workspace`,
+  `cargo test --workspace`, and `git diff --check`.

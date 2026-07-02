@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::controls::ExhibitControls;
+use crate::lid::LidState;
 use crate::lighting::ExhibitLightingConfig;
 use crate::mechanism_view::{
     COMB_DEFLECTION_SCALE, COMB_FREE_LENGTH_RATIO, COMB_GHOST_SAMPLES, COMB_MAX_DEFLECTION_RAD,
@@ -498,6 +499,7 @@ pub fn apply_debug_actions(
     visual_config: Res<MechanismVisualConfig>,
     mut winding: ResMut<WindingState>,
     mut twin: ResMut<MusicBoxTwinState>,
+    mut lid: ResMut<LidState>,
 ) {
     let envelopes = {
         let receiver = endpoint.requests.lock().expect("debug receiver poisoned");
@@ -518,6 +520,7 @@ pub fn apply_debug_actions(
             &visual_config,
             &mut winding,
             &mut twin,
+            &mut lid,
             endpoint.bind.as_deref(),
         );
         let _ = envelope.response.send(response);
@@ -534,6 +537,7 @@ fn handle_debug_action(
     visual_config: &MechanismVisualConfig,
     winding: &mut WindingState,
     twin: &mut MusicBoxTwinState,
+    lid: &mut LidState,
     debug_bind: Option<&str>,
 ) -> DebugResponse {
     match action {
@@ -545,6 +549,7 @@ fn handle_debug_action(
             model,
             winding,
             twin,
+            lid,
             debug_bind,
         )),
         DebugAction::DumpMechanism => {
@@ -575,6 +580,7 @@ fn handle_debug_action(
                 model,
                 winding,
                 twin,
+                lid,
                 debug_bind,
             ))
         }
@@ -587,6 +593,7 @@ fn handle_debug_action(
                 model,
                 winding,
                 twin,
+                lid,
                 debug_bind,
             ))
         }
@@ -647,11 +654,12 @@ fn handle_debug_action(
                 model,
                 winding,
                 twin,
+                lid,
                 debug_bind,
             ))
         }
         DebugAction::SetLid { t } => {
-            controls.lid_t = t.clamp(0.0, 1.0);
+            lid.set_manual(t);
             DebugResponse::ok(debug_state_json(
                 controls,
                 audio_output,
@@ -659,6 +667,7 @@ fn handle_debug_action(
                 model,
                 winding,
                 twin,
+                lid,
                 debug_bind,
             ))
         }
@@ -698,6 +707,7 @@ fn handle_debug_action(
                 model,
                 winding,
                 twin,
+                lid,
                 debug_bind,
             ))
         }
@@ -712,6 +722,7 @@ fn handle_debug_action(
                 model,
                 winding,
                 twin,
+                lid,
                 debug_bind,
             ))
         }
@@ -726,6 +737,7 @@ fn handle_debug_action(
                 model,
                 winding,
                 twin,
+                lid,
                 debug_bind,
             ))
         }
@@ -741,6 +753,7 @@ fn handle_debug_action(
                 model,
                 winding,
                 twin,
+                lid,
                 debug_bind,
             ))
         }
@@ -761,6 +774,7 @@ fn debug_state_json(
     model: &ModelResource,
     winding: &WindingState,
     twin: &MusicBoxTwinState,
+    lid: &LidState,
     debug_bind: Option<&str>,
 ) -> Value {
     let tick = playback::seconds_to_tick(twin.mechanical_seconds, mechanism);
@@ -799,8 +813,14 @@ fn debug_state_json(
                 "intensity": controls.environment_intensity,
             },
         },
+        "lid": {
+            "mode": format!("{:?}", lid.mode),
+            "t": lid.t,
+            "target_t": lid.target_t,
+            "velocity": lid.velocity,
+            "max_speed": lid.max_speed,
+        },
         "rig": {
-            "lid_t": controls.lid_t,
             "cylinder_degrees": controls.cylinder_degrees,
             "cylinder_radius": model.model.spec().cylinder.radius,
             "cylinder_length": model.model.spec().cylinder.length,

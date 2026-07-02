@@ -1,7 +1,9 @@
 pub mod comb_animation;
 pub mod controls;
 pub mod debug;
+pub mod lid;
 pub mod lighting;
+pub mod mechanical_audio;
 pub mod mechanism_view;
 pub mod model_view;
 pub mod outline;
@@ -43,6 +45,7 @@ pub fn run() {
         .add_plugins(EguiPlugin::default())
         .add_plugins(MeshPickingPlugin)
         .add_plugins(twin::MusicBoxTwinPlugin)
+        .add_plugins(lid::LidPlugin)
         .insert_resource(MeshPickingSettings {
             require_markers: true,
             ..default()
@@ -57,6 +60,12 @@ pub fn run() {
         .insert_resource(load_movable_model())
         .insert_resource(load_mechanism_layout())
         .init_resource::<AudioOutputState>()
+        .init_resource::<mechanical_audio::MechanicalAudioConfig>()
+        .init_resource::<mechanical_audio::MechanicalEventQueue>()
+        .init_resource::<mechanical_audio::MechanicalEventState>()
+        .init_resource::<mechanical_audio::MechanicalEventStats>()
+        .init_resource::<mechanical_audio::MechanicalAuditionQueue>()
+        .init_resource::<mechanical_audio::MechanicalAudioState>()
         .init_resource::<WindingState>()
         .insert_resource(DebugEndpoint::start_from_env())
         .init_resource::<MechanismVisualConfig>()
@@ -71,8 +80,11 @@ pub fn run() {
                 playback::apply_playback_controls,
                 winding::update_winding_interaction,
                 outline::toggle_lid_on_click,
+                lid::update_lid_state,
                 twin::update_music_box_twin,
+                mechanical_audio::emit_mechanical_events,
                 twin::schedule_twin_audio_cycles,
+                mechanical_audio::play_mechanical_audio,
                 winding::apply_winding_visuals,
                 outline::update_interactive_outlines,
                 model_view::apply_rig_controls,

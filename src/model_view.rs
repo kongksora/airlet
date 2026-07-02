@@ -365,12 +365,13 @@ fn build_outline_mesh(
 
 pub fn apply_rig_controls(
     mut controls: ResMut<crate::controls::ExhibitControls>,
+    lid: Res<crate::lid::LidState>,
     mut model: ResMut<ModelResource>,
     twin: Res<crate::twin::MusicBoxTwinState>,
     mut lid_query: Query<&mut Transform, (With<LidPivot>, Without<CylinderPivot>)>,
     mut cylinder_query: Query<&mut Transform, (With<CylinderPivot>, Without<LidPivot>)>,
 ) {
-    model.model.set_lid_t(controls.lid_t);
+    model.model.set_lid_t(lid.t);
     if twin.is_mechanically_active() {
         controls.cylinder_degrees = twin.cylinder_degrees;
         model.model.set_cylinder_degrees(controls.cylinder_degrees);

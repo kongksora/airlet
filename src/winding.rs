@@ -1,4 +1,5 @@
 use bevy::{picking::hover::Hovered, prelude::*};
+use bevy_egui::input::EguiWantsInput;
 
 use crate::model_view::ModelResource;
 use crate::scene::WindingKeyPivot;
@@ -40,12 +41,22 @@ impl WindingState {
 pub struct WindingKeyPart;
 
 pub fn update_winding_interaction(
+    egui_wants_input: Res<EguiWantsInput>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     targets: Query<&Hovered, With<WindingKeyPart>>,
     mut winding: ResMut<WindingState>,
 ) {
     let hovered = targets.iter().any(Hovered::get);
     winding.hovered = hovered || winding.pressed;
+
+    if egui_wants_input.wants_any_pointer_input() {
+        if winding.pressed && mouse_buttons.just_released(MouseButton::Left) {
+            winding.pressed = false;
+            winding.last_released_wind_amount = winding.wind_amount;
+            winding.last_started_cycles = u32::from(winding.wind_amount > 0.02);
+        }
+        return;
+    }
 
     if mouse_buttons.just_pressed(MouseButton::Left) && hovered {
         winding.pressed = true;

@@ -6,8 +6,9 @@ use bevy::{
     prelude::*,
     render::render_resource::{Face, PrimitiveTopology},
 };
+use bevy_egui::input::EguiWantsInput;
 
-use crate::controls::ExhibitControls;
+use crate::lid::LidState;
 use crate::winding::WindingState;
 
 const OUTLINE_OFFSET: f32 = 0.006;
@@ -274,10 +275,14 @@ pub fn update_interactive_outlines(
 }
 
 pub fn toggle_lid_on_click(
+    egui_wants_input: Res<EguiWantsInput>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     targets: Query<(&OutlineTarget, &Hovered)>,
-    mut controls: ResMut<ExhibitControls>,
+    mut lid: ResMut<LidState>,
 ) {
+    if egui_wants_input.wants_any_pointer_input() {
+        return;
+    }
     if !mouse_buttons.just_pressed(MouseButton::Left) {
         return;
     }
@@ -285,25 +290,13 @@ pub fn toggle_lid_on_click(
         .iter()
         .any(|(target, hovered)| target.kind == OutlineKind::Lid && hovered.get());
     if lid_hovered {
-        controls.lid_t = toggled_lid_t(controls.lid_t);
+        lid.toggle();
     }
-}
-
-pub fn toggled_lid_t(lid_t: f32) -> f32 {
-    if lid_t < 0.5 { 1.0 } else { 0.0 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn lid_toggle_targets_opposite_endpoint() {
-        assert_eq!(toggled_lid_t(0.0), 1.0);
-        assert_eq!(toggled_lid_t(0.49), 1.0);
-        assert_eq!(toggled_lid_t(0.5), 0.0);
-        assert_eq!(toggled_lid_t(1.0), 0.0);
-    }
 
     #[test]
     fn outline_shell_offsets_by_fixed_distance() {
