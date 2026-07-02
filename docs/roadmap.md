@@ -4019,6 +4019,9 @@ Purpose: preserve original wood geometry dimensions while snapping the source
 wood shell's horizontal OBB axes to the aligned handoff coordinate frame, so the
 shell no longer carries source residual yaw relative to the mechanism context.
 
+Status: superseded by the aligned-base single-truth handoff below. The OBB
+snapping approach added an unnecessary independent wood coordinate path.
+
 Checklist:
 
 - [x] Rotate source wood vertices from their source OBB frame into the handoff
@@ -4048,6 +4051,10 @@ safe source of exterior shell direction. The handoff should extract a shared
 horizontal frame from long, near-horizontal wood shell edges instead of using
 PCA or preserving the imported object transforms.
 
+Status: superseded by the aligned-base single-truth handoff below. Even edge
+frame extraction still kept a second wood-specific alignment path and was not
+acceptable as the handoff truth source.
+
 Checklist:
 
 - [x] Load original source lid/body wood vertices before replacement and keep
@@ -4070,3 +4077,39 @@ Completion notes:
 - Long wood shell edge angles after correction are near `0` degrees: `Mesh`
   reports repeated `-0.003` degree long edges; `Mesh.008` reports main edges
   around `-0.075` to `0.07` degrees while preserving diagonal cut/opening edges.
+
+### Blender Handoff Aligned-Base Single Truth
+
+Purpose: remove the handoff builder's remaining custom wood-coordinate
+heuristics. The old direct aligned export already had correct direction and
+position because every part came from the same source transform chain. The
+manual bevel handoff should therefore treat `music_box_aligned_base.glb` as the
+single spatial truth and should not re-import source wood, run PCA/OBB, extract
+edge frames, or apply any independent wood alignment.
+
+Checklist:
+
+- [x] Remove source-wood replacement and all PCA/edge-frame snapping from the
+  Blender handoff builder.
+- [x] Import `assets/generated/music_box_aligned_base.glb`, bake wood object
+  transforms into mesh vertices only to make Blender editing stable, and keep
+  all parts in the same aligned-base coordinate frame.
+- [x] Regenerate `target/manual-roundover/music_box_manual_bevel_handoff.blend`.
+- [x] Validate body/lid/mechanism top-view alignment, bottom-center origin
+  placement, Python compile, and `git diff --check`.
+
+Completion notes:
+
+- `py/airlet_audio_lab/build_manual_bevel_handoff.py` now imports only
+  `assets/generated/music_box_aligned_base.glb`; `--source`, `--source-spec`,
+  source OBB/PCA, and wood edge-frame extraction were removed.
+- Wood objects are converted to world-space mesh vertices with identity object
+  transforms before the shared scene centering pass. This keeps Blender editing
+  stable without introducing an independent wood coordinate system.
+- Regenerated handoff output:
+  `target/manual-roundover/music_box_manual_bevel_handoff.blend`.
+- Diagnostic top views:
+  `target/manual-roundover/handoff_aligned_body_top.png` and
+  `target/manual-roundover/handoff_aligned_full_top.png`.
+- Validation reports bottom center `[0.0, 0.0, 0.0]`; wood meshes have
+  `aligned_base_world_space` metadata and no boundary or overused edges.
