@@ -4038,3 +4038,35 @@ Completion notes:
   `[0.59205, 0.525857, 0.190378]` at `0.0` degrees.
 - The full assembly bottom center remains at the Blender origin, and wood mesh
   edges have no overused/non-manifold edges.
+
+### Blender Handoff Shared Wood Edge Frame
+
+Purpose: fix the remaining manual handoff mismatch where the lid orientation is
+correct but the body still appears yawed. The body mesh is asymmetric because of
+its tray, side opening, and internal cutouts, so its own PCA/OBB axis is not a
+safe source of exterior shell direction. The handoff should extract a shared
+horizontal frame from long, near-horizontal wood shell edges instead of using
+PCA or preserving the imported object transforms.
+
+Checklist:
+
+- [x] Load original source lid/body wood vertices before replacement and keep
+  original polygon topology.
+- [x] Derive the shared handoff frame from source wood shell long edges, then
+  project lid and body through that same frame instead of through body-local PCA.
+- [x] Reset replaced wood object transforms so already-aligned handoff vertices
+  are not rotated a second time by stale imported object matrices.
+- [x] Regenerate `target/manual-roundover/music_box_manual_bevel_handoff.blend`.
+- [x] Validate that lid/body metadata uses canonical handoff axes, the full
+  assembly remains bottom-centered at origin, and Python/diff checks pass.
+
+Completion notes:
+
+- The corrected body top diagnostic
+  `target/manual-roundover/handoff_body_top.png` shows body, crank, cylinder,
+  and comb sharing the same horizontal frame.
+- Blender validation reports wood object matrices as identity plus placement
+  translation, bottom center `[0.0, 0.0, 0.0]`, and no overused wood edges.
+- Long wood shell edge angles after correction are near `0` degrees: `Mesh`
+  reports repeated `-0.003` degree long edges; `Mesh.008` reports main edges
+  around `-0.075` to `0.07` degrees while preserving diagonal cut/opening edges.

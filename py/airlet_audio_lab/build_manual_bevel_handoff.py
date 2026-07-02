@@ -26,6 +26,7 @@ def main() -> None:
     args = _parse_blender_args(parser)
 
     import bpy
+    from mathutils import Matrix
 
     spec = tomllib.loads(args.spec.read_text(encoding="utf-8"))
     source_spec_path = args.source_spec if args.source_spec.exists() else args.spec
@@ -54,6 +55,7 @@ def main() -> None:
             bpy.data.meshes.remove(old_mesh)
         obj.name = mesh_name
         obj.data.name = mesh_name
+        obj.matrix_world = Matrix.Identity(4)
         record_shell_bounds_metadata(obj, source_mesh.bounds)
         replaced.append((mesh_name, len(vertices), len(faces)))
 
@@ -109,6 +111,12 @@ class SourceWoodMesh:
     bounds: OrientedShellBounds
 
 
+@dataclass(frozen=True)
+class RawWoodMesh:
+    vertices: list[tuple[float, float, float]]
+    faces: list[tuple[int, ...]]
+
+
 def oriented_shell_bounds(obj) -> OrientedShellBounds:
     coords = [(vertex.co.x, vertex.co.y, vertex.co.z) for vertex in obj.data.vertices]
     center_x = sum(coord[0] for coord in coords) / len(coords)
@@ -142,22 +150,70 @@ def source_wood_meshes_from_blender(bpy, source_path: Path, source_spec: dict) -
     clear_scene(bpy)
     bpy.ops.import_scene.gltf(filepath=str(source_path))
     align_matrix = blender_alignment_matrix(source_spec)
-    result: dict[str, SourceWoodMesh] = {}
+    raw_meshes: dict[str, RawWoodMesh] = {}
     for mesh_name in WOOD_MESH_INDEX_BY_NAME:
         obj = find_mesh_object(bpy, mesh_name)
-        vertices = [
-            transform_3x3(align_matrix, tuple(obj.matrix_world @ vertex.co))
-            for vertex in obj.data.vertices
-        ]
-        faces = [tuple(poly.vertices) for poly in obj.data.polygons]
-        bounds = oriented_bounds_from_points(vertices)
-        snapped_vertices = snap_points_to_handoff_axes(vertices, bounds)
+        raw_meshes[mesh_name] = RawWoodMesh(
+            [
+                transform_3x3(align_matrix, tuple(obj.matrix_world @ vertex.co))
+                for vertex in obj.data.vertices
+            ],
+            [tuple(poly.vertices) for poly in obj.data.polygons],
+        )
+
+    shared_axis_x = dominant_shell_edge_axis(raw_meshes)
+    shared_axis_y = (-shared_axis_x[1], shared_axis_x[0])
+    result: dict[str, SourceWoodMesh] = {}
+    for mesh_name, raw_mesh in raw_meshes.items():
+        bounds = oriented_bounds_from_points_in_frame(
+            raw_mesh.vertices,
+            shared_axis_x,
+            shared_axis_y,
+        )
+        snapped_vertices = snap_points_to_handoff_axes(raw_mesh.vertices, bounds)
+        snapped_bounds = canonical_bounds_from_frame_bounds(bounds)
         result[mesh_name] = SourceWoodMesh(
             snapped_vertices,
-            faces,
-            oriented_bounds_from_points(snapped_vertices),
+            raw_mesh.faces,
+            snapped_bounds,
         )
     return result
+
+
+def dominant_shell_edge_axis(raw_meshes: dict[str, RawWoodMesh]) -> tuple[float, float]:
+    weighted_x = 0.0
+    weighted_y = 0.0
+    total_weight = 0.0
+    for raw_mesh in raw_meshes.values():
+        vertices = raw_mesh.vertices
+        seen_edges: set[tuple[int, int]] = set()
+        for face in raw_mesh.faces:
+            for index, start in enumerate(face):
+                end = face[(index + 1) % len(face)]
+                key = tuple(sorted((start, end)))
+                if key in seen_edges:
+                    continue
+                seen_edges.add(key)
+                a = vertices[start]
+                b = vertices[end]
+                dx = b[0] - a[0]
+                dy = b[1] - a[1]
+                length = math.hypot(dx, dy)
+                if length < 0.04:
+                    continue
+                angle = math.atan2(dy, dx)
+                while angle <= -math.pi * 0.5:
+                    angle += math.pi
+                while angle > math.pi * 0.5:
+                    angle -= math.pi
+                if abs(math.degrees(angle)) > 20.0:
+                    continue
+                weighted_x += math.cos(angle) * length
+                weighted_y += math.sin(angle) * length
+                total_weight += length
+    if total_weight <= 1.0e-9:
+        return (1.0, 0.0)
+    return normalize2((weighted_x, weighted_y))
 
 
 def clear_scene(bpy) -> None:
@@ -224,6 +280,33 @@ def oriented_bounds_from_points(points: list[tuple[float, float, float]]) -> Ori
     return OrientedShellBounds((center_x, center_y), axis_x, axis_y, min_corner, max_corner)
 
 
+def oriented_bounds_from_points_in_frame(
+    points: list[tuple[float, float, float]],
+    axis_x: tuple[float, float],
+    axis_y: tuple[float, float],
+) -> OrientedShellBounds:
+    center_x = sum(point[0] for point in points) / len(points)
+    center_y = sum(point[1] for point in points) / len(points)
+    local = []
+    for point in points:
+        dx = point[0] - center_x
+        dy = point[1] - center_y
+        local.append((dx * axis_x[0] + dy * axis_x[1], dx * axis_y[0] + dy * axis_y[1], point[2]))
+    min_corner = tuple(min(point[index] for point in local) for index in range(3))
+    max_corner = tuple(max(point[index] for point in local) for index in range(3))
+    return OrientedShellBounds((center_x, center_y), axis_x, axis_y, min_corner, max_corner)
+
+
+def canonical_bounds_from_frame_bounds(bounds: OrientedShellBounds) -> OrientedShellBounds:
+    return OrientedShellBounds(
+        bounds.origin,
+        (1.0, 0.0),
+        (0.0, 1.0),
+        bounds.min_corner,
+        bounds.max_corner,
+    )
+
+
 def snap_points_to_handoff_axes(
     points: list[tuple[float, float, float]],
     bounds: OrientedShellBounds,
@@ -240,6 +323,13 @@ def normalize3(vector: tuple[float, float, float]) -> tuple[float, float, float]
     if length < 1.0e-12:
         return (0.0, 0.0, 0.0)
     return tuple(value / length for value in vector)
+
+
+def normalize2(vector: tuple[float, float]) -> tuple[float, float]:
+    length = math.hypot(vector[0], vector[1])
+    if length < 1.0e-12:
+        return (1.0, 0.0)
+    return (vector[0] / length, vector[1] / length)
 
 
 def matmul3(
@@ -382,7 +472,7 @@ def cut_round_crank_opening(
 
 
 def record_shell_bounds_metadata(obj, bounds: OrientedShellBounds) -> None:
-    obj["airlet_source_bounds_kind"] = "horizontal_obb_original_source"
+    obj["airlet_source_bounds_kind"] = "shared_lid_frame_original_source"
     obj["airlet_source_obb_origin"] = tuple(float(value) for value in bounds.origin)
     obj["airlet_source_obb_axis_x"] = tuple(float(value) for value in bounds.axis_x)
     obj["airlet_source_obb_axis_y"] = tuple(float(value) for value in bounds.axis_y)
