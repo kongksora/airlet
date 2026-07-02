@@ -4,11 +4,17 @@ use bevy::{
     gltf::{Gltf, GltfMaterial, GltfMesh, GltfNode},
     picking::{hover::Hovered, prelude::Pickable},
     prelude::*,
+    render::render_resource::Face,
 };
+use std::collections::HashMap;
 
 use crate::comb_animation::derive_comb_animation_events;
-use crate::lighting::{ExhibitLightingConfig, TextureMaterialClass, apply_texture_class};
+use crate::lighting::ExhibitLightingConfig;
 use crate::mechanism_view::{MechanismResource, spawn_hint_mechanism};
+use crate::outline::{
+    OutlineKind, OutlineTarget, outline_shell_cull_face_for_meshes, outline_shell_material,
+    outline_shell_mesh_for_meshes, spawn_outline_shell,
+};
 use crate::scene::{CylinderPivot, LidPivot, WindingKeyPivot};
 use crate::winding::WindingKeyPart;
 
@@ -32,11 +38,20 @@ pub struct ModelSpawnState {
 }
 
 pub struct PendingPrimitive {
+    pub source_mesh_index: usize,
     pub group: MeshGroup,
     pub name: String,
     pub transform: Transform,
     pub mesh: Handle<Mesh>,
     pub material: Option<Handle<GltfMaterial>>,
+}
+
+struct PendingOutlineGroup {
+    kind: OutlineKind,
+    name: String,
+    parent: Entity,
+    transform: Transform,
+    meshes: Vec<Handle<Mesh>>,
 }
 
 // ── model loading ───────────────────────────────────────────────
@@ -148,6 +163,7 @@ pub fn spawn_spec_model(
         let group = model.model.group_for_mesh(mesh.index);
         for primitive in &mesh.primitives {
             pending.push(PendingPrimitive {
+                source_mesh_index: mesh.index,
                 group,
                 name: format!("{} primitive {}", node.name, primitive.index),
                 transform: node.transform,
@@ -196,8 +212,11 @@ pub fn spawn_spec_model(
         commands.entity(root).add_child(pivot);
         pivot
     });
+    let outline_front_cull_material = materials.add(outline_shell_material(Face::Front));
+    let outline_back_cull_material = materials.add(outline_shell_material(Face::Back));
+    let mut outline_groups = HashMap::<usize, PendingOutlineGroup>::new();
 
-    for primitive in pending {
+    for primitive in &pending {
         let parent = match primitive.group {
             MeshGroup::Static => root,
             MeshGroup::Lid => lid_pivot,
@@ -211,31 +230,98 @@ pub fn spawn_spec_model(
                 .model
                 .relative_translation(transform.translation.to_array(), primitive.group),
         );
-        let mut entity =
-            commands.spawn((Name::new(primitive.name), Mesh3d(primitive.mesh), transform));
+        let mut entity = commands.spawn((
+            Name::new(primitive.name.clone()),
+            Mesh3d(primitive.mesh.clone()),
+            transform,
+        ));
         if let Some(material) = &primitive.material {
             let Some(gltf_material) = gltf_materials.get(material) else {
                 continue;
             };
             let normal = tuned_model_material(gltf_material, primitive.group, &lighting);
             let normal_material = materials.add(normal);
-            entity.insert(MeshMaterial3d(normal_material.clone()));
-            if primitive.group == MeshGroup::WindingKey {
-                let mut hover = lighting.winding_key_hover.material();
-                apply_texture_class(&mut hover, &asset_server, TextureMaterialClass::AgedBrass);
-                let hover_material = materials.add(hover);
-                entity.insert((
-                    WindingKeyPart {
-                        normal_material,
-                        hover_material,
+            entity.insert(MeshMaterial3d(normal_material));
+        }
+        let child = entity.id();
+        match primitive.group {
+            MeshGroup::WindingKey => {
+                commands.entity(child).insert((
+                    WindingKeyPart,
+                    OutlineTarget {
+                        kind: OutlineKind::WindingKey,
                     },
                     Pickable::default(),
                     Hovered(false),
                 ));
+                outline_groups
+                    .entry(primitive.source_mesh_index)
+                    .or_insert_with(|| PendingOutlineGroup {
+                        kind: OutlineKind::WindingKey,
+                        name: "Winding Key Outline Group".to_string(),
+                        parent,
+                        transform,
+                        meshes: Vec::new(),
+                    })
+                    .meshes
+                    .push(primitive.mesh.clone());
             }
+            MeshGroup::Lid => {
+                commands.entity(child).insert((
+                    OutlineTarget {
+                        kind: OutlineKind::Lid,
+                    },
+                    Pickable::default(),
+                    Hovered(false),
+                ));
+                outline_groups
+                    .entry(primitive.source_mesh_index)
+                    .or_insert_with(|| PendingOutlineGroup {
+                        kind: OutlineKind::Lid,
+                        name: "Lid Outline Group".to_string(),
+                        parent,
+                        transform,
+                        meshes: Vec::new(),
+                    })
+                    .meshes
+                    .push(primitive.mesh.clone());
+            }
+            _ => {}
         }
-        let child = entity.id();
         commands.entity(parent).add_child(child);
+    }
+
+    for outline_group in outline_groups.into_values() {
+        let Some((outline_mesh, cull_face)) = build_outline_mesh(
+            &render_meshes,
+            &outline_group.meshes,
+            &outline_group.transform,
+        ) else {
+            continue;
+        };
+        let outline_material = match cull_face {
+            Face::Front => outline_front_cull_material.clone(),
+            Face::Back => outline_back_cull_material.clone(),
+        };
+        let outline_mesh = render_meshes.add(outline_mesh);
+        let outline_parent = commands
+            .spawn((
+                Name::new(outline_group.name),
+                outline_group.transform,
+                Visibility::Visible,
+            ))
+            .id();
+        commands
+            .entity(outline_group.parent)
+            .add_child(outline_parent);
+        spawn_outline_shell(
+            &mut commands,
+            outline_parent,
+            outline_mesh,
+            outline_material,
+            outline_group.kind,
+            Transform::default(),
+        );
     }
 
     spawn_hint_mechanism(
@@ -259,6 +345,20 @@ pub fn spawn_spec_model(
         model.model.spec().cylinder.meshes.len(),
         mechanism.hint.events.len()
     );
+}
+
+fn build_outline_mesh(
+    render_meshes: &Assets<Mesh>,
+    meshes: &[Handle<Mesh>],
+    transform: &Transform,
+) -> Option<(Mesh, Face)> {
+    let meshes = meshes
+        .iter()
+        .filter_map(|handle| render_meshes.get(handle))
+        .collect::<Vec<_>>();
+    let outline_mesh = outline_shell_mesh_for_meshes(meshes.iter().copied())?;
+    let cull_face = outline_shell_cull_face_for_meshes(meshes.iter().copied(), transform);
+    Some((outline_mesh, cull_face))
 }
 
 // ── rig controls ────────────────────────────────────────────────

@@ -4,6 +4,7 @@ pub mod debug;
 pub mod lighting;
 pub mod mechanism_view;
 pub mod model_view;
+pub mod outline;
 pub mod playback;
 pub mod scene;
 pub mod screenshot;
@@ -69,9 +70,11 @@ pub fn run() {
                 scene::apply_lighting_controls,
                 playback::apply_playback_controls,
                 winding::update_winding_interaction,
+                outline::toggle_lid_on_click,
                 twin::update_music_box_twin,
                 twin::schedule_twin_audio_cycles,
                 winding::apply_winding_visuals,
+                outline::update_interactive_outlines,
                 model_view::apply_rig_controls,
                 mechanism_view::animate_comb_tines,
                 model_view::spawn_spec_model,

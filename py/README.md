@@ -38,6 +38,18 @@ Model probe outputs are written under `target/`.
 captures the product/crank/comb/cylinder/lid lighting screenshot set under
 `target/lighting/`, and writes `target/lighting/lighting-screenshot-stats.json`.
 
+## Runtime Asset Bake
+
+Generated runtime assets are ignored by Git. After clone, regenerate them from
+the tracked source assets before running the Bevy app:
+
+```bash
+uv run --project py airlet-bake-materials \
+  --manual-rounded-source assets/generated/music_box_manual_rounded_shell.glb
+```
+
+See `docs/asset-generation.md` for the tracked input/output boundary.
+
 ## Debug And MCP
 
 Start the app with the local debug endpoint enabled:

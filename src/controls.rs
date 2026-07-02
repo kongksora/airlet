@@ -215,7 +215,10 @@ pub fn control_panel(
 
             ui.separator();
             ui.heading("Camera");
-            ui.add(egui::Slider::new(&mut controls.yaw, -PI..=PI).text("Yaw"));
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut controls.yaw).speed(0.02));
+                ui.label("Yaw");
+            });
             ui.add(
                 egui::Slider::new(
                     &mut controls.pitch,

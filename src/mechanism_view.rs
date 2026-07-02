@@ -621,7 +621,7 @@ pub fn comb_mesh_ranges(
         index_offset += index_count;
         ranged_base
     });
-    let tine_vertex_count = (segment_count + 1) * 4;
+    let tine_vertex_count = segment_count * 16 + 8;
     let tine_index_count = segment_count * 24 + 12;
     let tines = tine_pivots
         .iter()
@@ -728,7 +728,7 @@ fn append_comb_tine(
 ) {
     let half_width = width * 0.5;
     let half_thickness = thickness * 0.5;
-    let base_index = positions.len() as u32;
+    let mut rings = Vec::<[Vec3; 4]>::with_capacity(segment_count + 1);
 
     for ring in 0..=segment_count {
         let progress = ring as f32 / segment_count as f32;
@@ -741,7 +741,6 @@ fn append_comb_tine(
         };
         let tangent_angle = deflection * progress.powf(1.35);
         let rotation = Quat::from_rotation_x(tangent_angle);
-        let normal_z = rotation * Vec3::Z;
 
         let corners = if collapsed {
             [center, center, center, center]
@@ -753,23 +752,72 @@ fn append_comb_tine(
                 center + rotation * Vec3::new(-half_width, 0.0, half_thickness),
             ]
         };
-        for corner in corners {
-            positions.push(corner.to_array());
-            normals.push(normal_z.to_array());
-            uvs.push([progress, 0.0]);
-        }
+        rings.push(corners);
     }
 
     for ring in 0..segment_count {
-        let base = base_index + (ring * 4) as u32;
-        let next = base + 4;
+        let progress = ring as f32 / segment_count as f32;
+        let next_progress = (ring + 1) as f32 / segment_count as f32;
         for side in 0..4 {
-            let a = base + side;
-            let b = base + (side + 1) % 4;
-            let c = next + (side + 1) % 4;
-            let d = next + side;
-            indices.extend_from_slice(&[a, b, c, a, c, d]);
+            append_comb_quad(
+                positions,
+                normals,
+                uvs,
+                indices,
+                [
+                    rings[ring][side],
+                    rings[ring][(side + 1) % 4],
+                    rings[ring + 1][(side + 1) % 4],
+                    rings[ring + 1][side],
+                ],
+                [
+                    [progress, 0.0],
+                    [progress, 1.0],
+                    [next_progress, 1.0],
+                    [next_progress, 0.0],
+                ],
+            );
         }
+    }
+    append_comb_quad(
+        positions,
+        normals,
+        uvs,
+        indices,
+        [rings[0][0], rings[0][3], rings[0][2], rings[0][1]],
+        [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]],
+    );
+    append_comb_quad(
+        positions,
+        normals,
+        uvs,
+        indices,
+        [
+            rings[segment_count][0],
+            rings[segment_count][1],
+            rings[segment_count][2],
+            rings[segment_count][3],
+        ],
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+    );
+}
+
+fn append_comb_quad(
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+    indices: &mut Vec<u32>,
+    corners: [Vec3; 4],
+    quad_uvs: [[f32; 2]; 4],
+) {
+    let base_index = positions.len() as u32;
+    let normal = (corners[1] - corners[0])
+        .cross(corners[2] - corners[0])
+        .normalize_or_zero();
+    for (corner, uv) in corners.into_iter().zip(quad_uvs) {
+        positions.push(corner.to_array());
+        normals.push(normal.to_array());
+        uvs.push(uv);
     }
     indices.extend_from_slice(&[
         base_index,
@@ -779,8 +827,6 @@ fn append_comb_tine(
         base_index + 2,
         base_index + 3,
     ]);
-    let tip = base_index + (segment_count * 4) as u32;
-    indices.extend_from_slice(&[tip, tip + 2, tip + 1, tip, tip + 3, tip + 2]);
 }
 
 fn append_comb_fixed_base(
@@ -1064,11 +1110,11 @@ pub(crate) mod tests {
         assert_eq!(fixed_base.index_range, 0..36);
         assert_eq!(tines.len(), 3);
         assert_eq!(tines[0].midi_note, 60);
-        assert_eq!(tines[0].vertex_range, 8..32);
+        assert_eq!(tines[0].vertex_range, 8..96);
         assert_eq!(tines[0].index_range, 36..168);
-        assert_eq!(tines[1].vertex_range, 32..56);
+        assert_eq!(tines[1].vertex_range, 96..184);
         assert_eq!(tines[1].index_range, 168..300);
-        assert_eq!(tines[2].vertex_range, 56..80);
+        assert_eq!(tines[2].vertex_range, 184..272);
         assert_eq!(tines[2].index_range, 300..432);
     }
 
@@ -1082,11 +1128,36 @@ pub(crate) mod tests {
             .and_then(|attribute| attribute.as_float3())
             .unwrap();
 
-        assert_eq!(tines[0].vertex_range, 0..12);
+        assert_eq!(tines[0].vertex_range, 0..40);
         assert!(
             positions
                 .iter()
                 .all(|position| *position == [0.0, 2.0, 0.0])
         );
+    }
+
+    #[test]
+    fn comb_tine_mesh_uses_per_face_normals() {
+        let pivots = vec![(60, Vec3::new(0.0, 2.0, 0.0))];
+        let (_, tines) = comb_mesh_ranges(None, &pivots, 1);
+        let mesh = comb_mesh(None, &tines, 1.0, 0.2, 0.1, 1, &[0.0], &[true], false);
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .and_then(|attribute| attribute.as_float3())
+            .unwrap();
+        let mut unique_normals = Vec::<[f32; 3]>::new();
+        for normal in normals {
+            if !unique_normals.iter().any(|existing| {
+                existing
+                    .iter()
+                    .zip(normal)
+                    .all(|(left, right)| (*left - *right).abs() < 1.0e-5)
+            }) {
+                unique_normals.push(*normal);
+            }
+        }
+
+        assert_eq!(tines[0].vertex_range, 0..24);
+        assert!(unique_normals.len() >= 6);
     }
 }

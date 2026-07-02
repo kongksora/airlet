@@ -14,7 +14,7 @@ from airlet_audio_lab.wood_preset_gallery import (
 
 
 DEFAULT_OUT_DIR = Path("assets/textures/procedural")
-TEXTURE_SIZE = 512
+TEXTURE_SIZE = 2048
 PRODUCTION_WOOD_PRESET = "walnut_long_oil"
 
 
@@ -28,7 +28,7 @@ def main() -> None:
     rng = np.random.default_rng(42)
     recipes = {
         "aged_brass": _metal(args.size, rng, base=(0.95, 0.62, 0.18), roughness=0.24),
-        "polished_steel": _metal(args.size, rng, base=(0.66, 0.68, 0.66), roughness=0.18),
+        "polished_steel": _metal(args.size, rng, base=(0.86, 0.88, 0.86), roughness=0.12),
         "dark_metal": _metal(args.size, rng, base=(0.12, 0.12, 0.11), roughness=0.52),
         "dark_stage": _stage(args.size, rng),
     }

@@ -4248,3 +4248,398 @@ Completion notes:
 - Bevy screenshot smoke passed with
   `AIRLET_SCREENSHOT=target/manual-roundover/manual_rounded_app_smoke.png cargo run`;
   ImageMagick reported `1280x800`, mean `0.056223`, min `0`, max `1`.
+
+### Spotlight Visibility Failure Investigation
+
+Purpose: diagnose why the default spotlight can appear completely invisible in
+the current preconfigured scene, treating it as a rendering failure path rather
+than a mood-tuning request.
+
+Checklist:
+
+- [x] Capture the true default scene screenshot and record image statistics.
+- [x] Compute the default spotlight position, target, cone footprint, and model
+  bounds in the same coordinate system.
+- [x] Compare default lighting against controlled variants that isolate cone
+  width, target point, shadows, and model occlusion.
+- [x] Decide whether the failure is a Bevy bug, asset/geometry problem, or app
+  configuration error.
+- [x] Implement the minimum fix only after the root cause is known, then
+  validate with screenshots and Rust checks.
+
+Completion notes:
+
+- Default screenshot before the fix:
+  `target/debug/default-spot-probe.png`; ImageMagick mean was `0.056263` with
+  UI visible. Hidden-UI default was `target/debug/spotlight-probe/default_hidden_ui.png`
+  with mean `0.032481`.
+- Isolated Bevy `SpotLight` at the default narrow cone was effectively black:
+  `target/debug/spotlight-probe/isolated_default_spot.png` reported mean
+  `0.018318` and max `0.043137`.
+- Angle sweep showed the clustered `SpotLight` stayed black through
+  `outer_angle <= 0.70` and only became visible around `outer_angle >= 0.90`;
+  this points to Bevy clustered spot-light culling/attenuation behavior, not a
+  broken wood mesh or material.
+- The product fix keeps the Bevy `SpotLight` entity but adds
+  `Lighting Spot Fallback`, a same-position focused `PointLight` driven by the
+  existing spotlight controls. This preserves the high-contrast dark scene while
+  preventing the default preset from having no visible spotlight contribution.
+- Validation screenshots after the fix:
+  `target/debug/spot-fallback-default.png` reported mean `0.060598`, max `1`;
+  `target/debug/spotlight-probe/fallback_spot_only_default.png` reported mean
+  `0.033093`, max `1`, confirming spotlight-only visibility.
+
+### Orbit-Dependent Spotlight Dropout Follow-Up
+
+Purpose: fix the remaining camera-angle-dependent light dropout where orbiting
+around the exhibit can cause the spotlight contribution to turn off abruptly and
+then reappear after a small camera movement.
+
+Checklist:
+
+- [x] Reproduce the dropout with a camera yaw sweep and screenshot statistics.
+- [x] Determine whether the discontinuity follows the Bevy `SpotLight`, the
+  focused fallback `PointLight`, or both.
+- [x] Fix the runtime light volume so camera orbit does not cull the focused
+  light contribution.
+- [x] Validate with a second yaw sweep and visual screenshots.
+- [x] Run formatting, Rust checks, tests, and `git diff --check`.
+
+Completion notes:
+
+- Reproduction sweep:
+  `target/debug/spotlight-yaw-sweep-before/stats.json`. With only
+  spotlight/fallback active, yaw positions near the side/back dropped to the
+  black baseline, for example `yaw_18` reported mean `0.018298`, max
+  `0.043137`.
+- Correction: the camera-angle symptom is a renderer discontinuity, not a
+  physical lighting explanation. The relevant Bevy path is light visibility and
+  clustered-light assignment: light entities receive a `Sphere` and their
+  `ViewVisibility` can be frustum-culled from the active camera, which can make
+  a light's contribution appear to switch off abruptly while the user is still
+  viewing the lit area.
+- Fix: keep the real Bevy `SpotLight`, add a controlled fallback light, and mark
+  both light entities with `NoFrustumCulling` so camera orbit does not remove
+  them from the lighting pass through entity visibility culling. The fallback is
+  biased toward the spotlight landing zone and driven from existing spotlight
+  controls to preserve the dark-stage mood without relying on Bevy's narrow
+  spotlight cone behavior.
+- Tuned validation:
+  `target/debug/spotlight-orbit-fix-final/stats.json`. The former dropout angle
+  now reports mean `0.048235`, max `0.835294`; default all-light screenshot
+  `target/debug/spotlight-orbit-fix-final/default.png` reports mean `0.063385`,
+  max `0.917647`.
+
+### Exhibit-Scale Camera Projection And Cluster Tuning
+
+Purpose: replace Bevy's large-world default camera projection and cluster depth
+settings with values appropriate for the 14cm exhibit scale, because zooming in
+reveals lights that can disappear or quantize when the camera is farther away.
+
+Checklist:
+
+- [x] Record the default Bevy camera/cluster values that are mismatched with
+  the exhibit scale.
+- [x] Add explicit perspective near/far values for the exhibit camera.
+- [x] Add explicit clustered-forward z slicing for the exhibit camera.
+- [x] Validate close and far orbit screenshots do not show distance-dependent
+  light disappearance.
+- [x] Run formatting, Rust checks, tests, and `git diff --check`.
+
+Completion notes:
+
+- Bevy defaults are large-world values: `PerspectiveProjection::default()` uses
+  `near=0.1`, `far=1000.0`; `ClusterZConfig::default()` uses
+  `first_slice_depth=5.0` and max-clusterable-object far depth. Those defaults
+  are mismatched with Airlet's 14cm object and camera radius range
+  `0.055..1.2`.
+- The exhibit camera now uses explicit perspective values:
+  `near=0.005`, `far=2.0`, with the matching custom near clip plane.
+- The exhibit camera now uses explicit clustered-forward slicing:
+  `first_slice_depth=0.08`, `far_z_mode=Constant(2.0)`, `24` z slices, and
+  `4096` total clusters.
+- Validation probe:
+  `target/debug/camera-projection-cluster-probe/stats.json`. At the old dropout
+  yaw and far radius `1.05`, the screenshot reports mean `0.044227`, max
+  `0.858824`, confirming the light remains visible rather than falling to the
+  black baseline.
+
+### Default Cone, Texture Density, And Comb Steel Pass
+
+Purpose: apply the current exhibit defaults after the spotlight stability pass:
+use a narrower default spotlight cone, prevent camera zoom from entering the
+model, increase baked wood texture density, smooth the polished crosscut wood,
+and make the procedural comb read as bright polished steel instead of black
+metal.
+
+Checklist:
+
+- [x] Set default spotlight outer angle to `0.30`, inner angle to `0.20`, and
+  camera minimum distance to `0.20`.
+- [x] Double baked wood UV density again so the model displays denser procedural
+  texture detail.
+- [x] Reduce crosscut wood roughness and normal relief by at least half to match
+  a sanded and waxed surface.
+- [x] Check the comb material path and brighten the polished-steel material used
+  by the procedural comb.
+- [x] Regenerate procedural textures and the material-baked GLB.
+- [x] Validate with screenshot evidence plus formatting, Rust checks, tests, and
+  `git diff --check`.
+
+Completion notes:
+
+- Defaults now come from `ExhibitLightingConfig`: `default_inner_angle = 0.20`,
+  `default_outer_angle = 0.30`; camera zoom is clamped by
+  `CAMERA_MIN_RADIUS = 0.20`.
+- Wood bake density now uses `WOOD_UV_DENSITY = 4.0` across radial,
+  tangential, and crosscut UV windows, so the density change is applied during
+  GLB baking rather than only existing as an unused constant.
+- Crosscut wood is smoother: baked material roughness factor changed from
+  `0.56` to `0.34`, generated crosscut roughness contributions were reduced,
+  and crosscut normal strength changed from `7.4` to `3.2`.
+- Procedural comb still uses the polished-steel path; `polished_steel` base
+  texture is brighter and its roughness/reflectance defaults now read as a
+  brighter polished metal instead of dark metal.
+- Regenerated `assets/textures/procedural/*cross*`, `polished_steel_*`, and
+  `assets/generated/music_box_material_baked.glb` with
+  `uv run --project py airlet-bake-materials --manual-rounded-source
+  assets/generated/music_box_manual_rounded_shell.glb`.
+- Default screenshot:
+  `target/default-cone-texture-comb.png`, `1280x800`, ImageMagick mean
+  brightness `0.128333`, max `1.0`.
+- Validation passed: Python compileall, `cargo fmt --all`,
+  `cargo check --workspace`, and `cargo test --workspace`.
+
+### High-Resolution Wood Atlas And Annual-Color Retune
+
+Purpose: remove visible material tiling seams introduced by UV scaling, increase
+the generated texture atlas size, reduce annual-ring density, and strengthen the
+continuous cumulative annual color drift shared by radial, tangential, and
+crosscut wood.
+
+Checklist:
+
+- [x] Increase generated procedural texture size so the material atlas has more
+  pixel detail on the model.
+- [x] Keep baked wood UV windows inside a single texture sample window to avoid
+  repeat-wrap seams on the model.
+- [x] Reduce annual-ring density to `50%` of the current generator output.
+- [x] Strengthen the shared annual-ring cumulative color drift while preserving
+  continuous interpolation instead of hard per-ring color steps.
+- [x] Regenerate procedural textures and the material-baked GLB.
+- [x] Validate with image statistics/screenshots plus formatting, Python, Rust,
+  and diff checks.
+
+Completion notes:
+
+- Production procedural texture size is now `2048x2048` instead of `512x512`.
+- The prior `WOOD_UV_DENSITY = 4.0` path was causing UV coordinates to exceed
+  the single texture window and trigger repeat wrapping; density is now carried
+  by the larger generated atlas while `WOOD_UV_DENSITY = 1.0` keeps UVs inside
+  the sampled window.
+- Baked wood UV validation on `assets/generated/music_box_material_baked.glb`:
+  `Mesh` uses `uv_min=[0.085898, 0.217918]`,
+  `uv_max=[0.843950, 0.614901]`; `Mesh.008` uses
+  `uv_min=[0.085898, 0.140701]`, `uv_max=[0.853657, 0.614901]`.
+- `ANNUAL_RING_SCALE` is now `4.0`; for `walnut_long_oil`, generated
+  `ring_frequency` is `1.12825`, half of the prior `2.2565` frequency.
+- `AnnualRingColorProfile` now uses stronger smoothed cumulative random-walk
+  steps, weaker local per-ring noise, and a slower arc. The selected walnut
+  profile remains continuously interpolated, with sampled values ranging from
+  `-0.3817` to `0.72`.
+- Regenerated procedural textures and
+  `assets/generated/music_box_material_baked.glb` with
+  `uv run --project py airlet-bake-materials --manual-rounded-source
+  assets/generated/music_box_manual_rounded_shell.glb`.
+- Screenshot evidence:
+  `target/highres-wood-ring-retune-default.png` (`1280x800`, mean `0.12699`,
+  max `1.0`) and `target/highres-wood-ring-retune-open.png` (`1280x800`, mean
+  `0.218708`, max `0.964706`).
+- Validation passed: Python compileall, `cargo fmt --all`,
+  `cargo check --workspace`, and `cargo test --workspace`.
+
+### Comb Tine Normal Correction
+
+Purpose: fix the procedural comb tines reading black under polished-steel
+material by giving the generated tine mesh physically correct per-face normals
+instead of one shared normal for every side of each rectangular tine.
+
+Checklist:
+
+- [x] Replace shared comb-tine ring normals with per-face normals for each side,
+  root cap, and tip cap.
+- [x] Update comb mesh vertex ranges and tests to match the split-vertex mesh.
+- [x] Validate the comb material still uses `PolishedSteel`.
+- [x] Keep camera yaw seamless by removing the bounded yaw slider from the UI.
+- [x] Capture a close-up screenshot showing the comb teeth under the current
+  lighting preset.
+- [x] Run formatting, Rust checks, tests, and `git diff --check`.
+
+Completion notes:
+
+- Procedural comb material remains `lighting.comb` plus
+  `TextureMaterialClass::PolishedSteel`.
+- `append_comb_tine` now emits split vertices per side/cap through
+  `append_comb_quad`, so each face has its own normal instead of all faces
+  sharing the former `normal_z`.
+- Comb tine vertex ranges now account for split vertices:
+  `segment_count * 16 + 8` vertices per tine; index counts are unchanged.
+- Added `comb_tine_mesh_uses_per_face_normals`, which verifies a generated tine
+  has at least six distinct face normals.
+- The camera yaw control now uses an unbounded `DragValue`; mouse orbit was
+  already continuous, and the UI no longer clamps yaw to `-PI..PI`.
+- Close-up screenshot:
+  `target/comb-per-face-normals-closeup.png`, `1280x800`, mean `0.300853`,
+  max `0.996078`, showing the comb teeth as visible steel instead of a black
+  block.
+- Validation passed: `cargo fmt --all`, `cargo check --workspace`, and
+  `cargo test --workspace`.
+
+### Shared Picking Outline Interaction
+
+Purpose: replace winding-key material swapping with a reusable outline-shell
+highlight that can also be applied to the lid, while preserving Bevy mesh
+picking as the single hover/click detection path.
+
+Checklist:
+
+- [x] Add shared outline target/shell components and a common outline material.
+- [x] Spawn outline shells for winding-key parts and lid parts without making
+  the shells pickable.
+- [x] Remove winding-key hover material swapping and drive winding outline
+  visibility from hover/pressed state.
+- [x] Add lid hover outline and left-click toggle for lid open/closed state.
+- [x] Keep camera yaw seamless and existing winding behavior intact.
+- [x] Validate with close-up screenshots plus formatting, Rust checks, tests,
+  and `git diff --check`.
+
+Completion notes:
+
+- Added `src/outline.rs` with shared `OutlineKind`, `OutlineTarget`,
+  `OutlineShell`, `outline_material`, `spawn_outline_shell`,
+  `update_interactive_outlines`, and `toggle_lid_on_click`.
+- Winding-key and lid primitives now both use Bevy mesh picking via
+  `Pickable`/`Hovered` plus `OutlineTarget`; outline shell children do not get
+  picking markers, so they do not intercept hover.
+- Winding hover no longer swaps the original model material. `WindingKeyPart`
+  is now a marker component, and the outline shell is shown from hover/pressed
+  state.
+- Lid hover uses the same outline shell mechanism; left click on a hovered lid
+  toggles `lid_t` between closed and open endpoints.
+- The shared outline material uses an inverted-hull shell (`cull_mode =
+  Face::Front`) with a warm emissive outline color.
+- Outline shells now scale around each mesh's local AABB center rather than the
+  mesh local origin, preventing off-center crank/lid meshes from drifting away
+  from their source geometry when highlighted.
+- Winding-key mesh grouping was rechecked: meshes `18`, `19`, and `20` are the
+  right-side crank head, arm, and shaft region, not front latch meshes.
+- Screenshot evidence:
+  `target/winding-outline-shell-closeup.png`, `1280x800`, mean `0.205932`,
+  max `1.0`; corrected centered-shell screenshot:
+  `target/winding-outline-centered-closeup.png`, `1280x800`, mean `0.206049`,
+  max `1.0`.
+- Validation passed: `cargo fmt --all`, `cargo check --workspace`, and
+  `cargo test --workspace`.
+
+### Lid Outline Foreground Occlusion Fix
+
+Purpose: keep the winding-key shell outline behavior and apply the same
+single-sided enlarged-shell method to the lid, instead of replacing the lid with
+a separate AABB frame style.
+
+Checklist:
+
+- [x] Remove the temporary lid-only AABB frame outline path.
+- [x] Use the same centered inverted-hull shell geometry for lid and winding key.
+- [x] Detect inward-wound closed meshes and flip the outline cull face for those
+  meshes.
+- [x] Keep winding-key outline shell unchanged.
+- [x] Preserve the shared outline visibility and lid click logic.
+- [x] Validate with tests and `git diff --check`.
+
+Completion notes:
+
+- Lid and winding-key outlines now both use the original mesh, the centered
+  shell transform, and a single-sided outline material.
+- The largest lid mesh (`Mesh 0`) is watertight and winding-consistent but has a
+  negative signed volume, so its outline material now uses back-face culling
+  while normal outward-wound meshes keep front-face culling.
+- Removed the lid-only frame mesh generator and frame material, so the outline
+  system has one geometry strategy again.
+- Validation passed: `cargo fmt --all`, `cargo check --workspace`,
+  `cargo test --workspace`, and `git diff --check`.
+
+### Root Winding Fix And Fixed-Offset Outline
+
+Purpose: remove the lid outline foreground issue at the asset-pipeline root and
+replace scale-based outline shells with fixed-distance normal-offset shells.
+
+Checklist:
+
+- [x] Fix negative signed-volume closed wood meshes during material baking.
+- [x] Regenerate the baked GLB and verify the largest lid shell has positive
+  signed volume.
+- [x] Replace percentage scale outline expansion with fixed normal offset
+  outline meshes.
+- [x] Keep shared lid/winding-key picking, visibility, and click behavior.
+- [x] Validate with Python asset diagnostics, formatting, Rust checks, tests,
+  and `git diff --check`.
+
+Completion notes:
+
+- `airlet-bake-materials` now records `winding_fixes` and flips split wood
+  primitives whose combined signed volume is negative, including normals,
+  tangents, and triangle indices.
+- Regenerated `assets/generated/music_box_material_baked.glb` with
+  `uv run --project py airlet-bake-materials --manual-rounded-source
+  assets/generated/music_box_manual_rounded_shell.glb --skip-textures`.
+- Baked report shows `Mesh 0` was corrected from `-0.013006528094241077` to
+  `0.013006528094241077`; direct GLB validation reports `Mesh` volume
+  `0.013006516` and `Mesh.008` volume `0.022969327`.
+- Outline shells now use `OUTLINE_OFFSET = 0.006` model units along vertex
+  normals instead of `OUTLINE_SCALE = 1.045`; lid and winding-key still share
+  the same picking/visibility pipeline.
+- Fixed-offset outline meshes keep both `MAIN_WORLD` and `RENDER_WORLD` asset
+  usages; a regression test now guards against invisible outline meshes that
+  never reach the renderer.
+- Fixed-offset expansion now welds coincident split vertices before deriving
+  offset directions. This prevents hard-edge/UV-split normals from pulling
+  shared positions apart and making the outline shell look open.
+- Outline shell generation now combines all GLTF primitives that belong to the
+  same source mesh before welding and offsetting. This keeps material-split
+  wood seams, including lid roundover-to-side transitions, from opening between
+  separate Bevy primitive meshes.
+- Validation passed: Python compileall, `cargo fmt --all`,
+  `cargo check --workspace`, `cargo test --workspace`, and `git diff --check`.
+
+### Repository Cleanup And Commit Handoff
+
+Purpose: clean temporary validation outputs, keep the documented asset boundary
+clear, and prepare the completed lighting/material/outline work for commit.
+
+Checklist:
+
+- [x] Remove ignored screenshot/report outputs from `target/`.
+- [x] Remove local Python `__pycache__` output under `py/airlet_audio_lab`.
+- [x] Leave untracked third-party raw model downloads uncommitted.
+- [x] Stop tracking regenerated runtime bake outputs and document the
+  clone-time asset generation command.
+- [x] Verify ignored runtime assets can be regenerated from tracked inputs.
+- [x] Re-run formatting, Rust checks, workspace tests, and `git diff --check`.
+- [x] Commit the completed implementation and documentation update.
+
+Completion notes:
+
+- Runtime generated outputs are now ignored:
+  `assets/generated/music_box_aligned_base.*`,
+  `assets/generated/music_box_material_baked.*`, and
+  `assets/textures/procedural/*.png`.
+- Tracked asset inputs are `assets/models/converted/music_box.glb`,
+  `assets/models/converted/source_spec.toml`,
+  `assets/models/converted/spec.toml`, and the hand-edited
+  `assets/generated/music_box_manual_rounded_shell.glb`.
+- Added `docs/asset-generation.md` and linked the generation command from
+  `py/README.md` and `AGENTS.md`.
+- Verified regeneration from tracked inputs with
+  `uv run --project py airlet-bake-materials --manual-rounded-source
+  assets/generated/music_box_manual_rounded_shell.glb`.

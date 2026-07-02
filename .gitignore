@@ -4,3 +4,8 @@
 /py/out
 /py/*.egg-info
 /py/**/__pycache__
+/assets/generated/music_box_aligned_base.glb
+/assets/generated/music_box_aligned_base.json
+/assets/generated/music_box_material_baked.glb
+/assets/generated/music_box_material_baked.json
+/assets/textures/procedural/*.png

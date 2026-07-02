@@ -144,8 +144,8 @@ impl Default for ExhibitLightingConfig {
                 max_intensity: 60_000.0,
                 range: 0.9,
                 radius: 0.01,
-                default_inner_angle: 0.13,
-                default_outer_angle: 0.13,
+                default_inner_angle: 0.20,
+                default_outer_angle: 0.30,
                 min_inner_angle: 0.03,
                 min_outer_angle: 0.08,
                 max_outer_angle: 1.35,
@@ -204,10 +204,10 @@ impl Default for ExhibitLightingConfig {
                 emissive: LinearRgba::BLACK,
             },
             comb: MaterialRecipe {
-                base_color: Color::srgb(0.78, 0.80, 0.78),
+                base_color: Color::srgb(0.88, 0.90, 0.88),
                 metallic: 0.95,
-                perceptual_roughness: 0.16,
-                reflectance: 0.88,
+                perceptual_roughness: 0.12,
+                reflectance: 0.92,
                 alpha_mode: AlphaMode::Opaque,
                 emissive: LinearRgba::BLACK,
             },
@@ -282,7 +282,7 @@ impl TextureMaterialClass {
     fn pbr(self) -> (f32, f32, f32) {
         match self {
             Self::AgedBrass => (0.96, 0.24, 0.86),
-            Self::PolishedSteel => (0.98, 0.18, 0.78),
+            Self::PolishedSteel => (0.98, 0.12, 0.86),
             Self::DarkMetal => (0.82, 0.54, 0.45),
             Self::DarkStage => (0.0, 0.86, 0.18),
         }

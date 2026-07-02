@@ -3,9 +3,12 @@ use std::f32::consts::FRAC_PI_2;
 use airlet_model::MovableMusicBoxModel;
 use bevy::{
     anti_alias::taa::TemporalAntiAliasing,
-    camera::Hdr,
+    camera::{Hdr, PerspectiveProjection, Projection, visibility::NoFrustumCulling},
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
-    light::{CascadeShadowConfigBuilder, EnvironmentMapLight},
+    light::{
+        CascadeShadowConfigBuilder, EnvironmentMapLight,
+        cluster::{ClusterConfig, ClusterFarZMode, ClusterZConfig},
+    },
     picking::prelude::MeshPickingCamera,
     prelude::*,
 };
@@ -16,10 +19,13 @@ use crate::model_view::ModelResource;
 
 pub const EXHIBIT_TARGET: Vec3 = Vec3::new(0.0, 0.032, 0.0);
 pub const PLATFORM_TOP_Y: f32 = 0.0;
-pub const CAMERA_MIN_RADIUS: f32 = 0.055;
+pub const CAMERA_MIN_RADIUS: f32 = 0.20;
 pub const CAMERA_MAX_RADIUS: f32 = 1.2;
 pub const CAMERA_MIN_PITCH: f32 = 0.0;
 pub const CAMERA_MAX_PITCH: f32 = 1.25;
+pub const CAMERA_NEAR: f32 = 0.005;
+pub const CAMERA_FAR: f32 = 2.0;
+pub const CAMERA_CLUSTER_FIRST_SLICE_DEPTH: f32 = 0.08;
 pub const MODEL_SCALE: f32 = 0.2095999;
 
 #[derive(Component)]
@@ -27,6 +33,9 @@ pub struct ExhibitCamera;
 
 #[derive(Component)]
 pub struct ExhibitSpotlight;
+
+#[derive(Component)]
+pub struct ExhibitSpotlightFallback;
 
 #[derive(Component)]
 pub struct LightingKey;
@@ -151,29 +160,54 @@ pub fn setup_scene(
             controls.spot_outer_angle,
             controls.spot_intensity,
         ),
+        NoFrustumCulling,
         spotlight_transform(&controls),
     ));
 
     commands.spawn((
-        Name::new("Exhibit Camera"),
-        ExhibitCamera,
-        MeshPickingCamera,
-        Camera3d::default(),
-        Hdr,
-        Msaa::Off,
-        TemporalAntiAliasing::default(),
-        lighting.exposure,
-        lighting.tonemapping,
-        lighting.bloom.clone(),
-        lighting.screen_space_ao.clone(),
-        lighting.contact_shadows.clone(),
-        EnvironmentMapLight {
-            intensity: ExhibitLightingConfig::ENVIRONMENT_INTENSITY_RANGE
-                .clamp(controls.environment_intensity),
-            ..EnvironmentMapLight::solid_color(&mut images, lighting.environment_color)
-        },
-        camera_transform(&controls),
+        Name::new("Lighting Spot Fallback"),
+        ExhibitSpotlightFallback,
+        spotlight_fallback_light(&controls, &lighting),
+        NoFrustumCulling,
+        spotlight_fallback_transform(&controls),
     ));
+
+    commands
+        .spawn((
+            Name::new("Exhibit Camera"),
+            ExhibitCamera,
+            MeshPickingCamera,
+            Camera3d::default(),
+            Projection::Perspective(PerspectiveProjection {
+                near: CAMERA_NEAR,
+                far: CAMERA_FAR,
+                near_clip_plane: Vec4::new(0.0, 0.0, -1.0, -CAMERA_NEAR),
+                ..default()
+            }),
+            Hdr,
+            Msaa::Off,
+            TemporalAntiAliasing::default(),
+            lighting.exposure,
+            lighting.tonemapping,
+            lighting.bloom.clone(),
+            lighting.screen_space_ao.clone(),
+            lighting.contact_shadows.clone(),
+            EnvironmentMapLight {
+                intensity: ExhibitLightingConfig::ENVIRONMENT_INTENSITY_RANGE
+                    .clamp(controls.environment_intensity),
+                ..EnvironmentMapLight::solid_color(&mut images, lighting.environment_color)
+            },
+            camera_transform(&controls),
+        ))
+        .insert(ClusterConfig::FixedZ {
+            total: 4096,
+            z_slices: 24,
+            z_config: ClusterZConfig {
+                first_slice_depth: CAMERA_CLUSTER_FIRST_SLICE_DEPTH,
+                far_z_mode: ClusterFarZMode::Constant(CAMERA_FAR),
+            },
+            dynamic_resizing: true,
+        });
 }
 
 pub fn orbit_camera(
@@ -237,7 +271,20 @@ pub fn apply_lighting_controls(
             Without<LightingRim>,
         ),
     >,
-    mut lights: Query<(&mut SpotLight, &mut Transform), With<ExhibitSpotlight>>,
+    mut lights: Query<
+        (&mut SpotLight, &mut Transform),
+        (With<ExhibitSpotlight>, Without<ExhibitSpotlightFallback>),
+    >,
+    mut spot_fallbacks: Query<
+        (&mut PointLight, &mut Transform),
+        (
+            With<ExhibitSpotlightFallback>,
+            Without<ExhibitSpotlight>,
+            Without<LightingFill>,
+            Without<LightingRim>,
+            Without<LightingAccent>,
+        ),
+    >,
 ) {
     if !controls.is_changed() {
         return;
@@ -280,6 +327,11 @@ pub fn apply_lighting_controls(
         light.outer_angle = lighting.spot.clamp_outer_angle(controls.spot_outer_angle);
         *transform = spotlight_transform(&controls);
     }
+
+    for (mut light, mut transform) in &mut spot_fallbacks {
+        *light = spotlight_fallback_light(&controls, &lighting);
+        *transform = spotlight_fallback_transform(&controls);
+    }
 }
 
 pub fn camera_transform(controls: &ExhibitControls) -> Transform {
@@ -308,4 +360,36 @@ pub fn spotlight_transform(controls: &ExhibitControls) -> Transform {
         horizontal * controls.light_yaw.cos(),
     ) + EXHIBIT_TARGET;
     Transform::from_translation(position).looking_at(EXHIBIT_TARGET, Vec3::Y)
+}
+
+fn spotlight_fallback_light(
+    controls: &ExhibitControls,
+    lighting: &ExhibitLightingConfig,
+) -> PointLight {
+    let outer_angle = lighting.spot.clamp_outer_angle(controls.spot_outer_angle);
+    let footprint = controls.light_distance * outer_angle.tan().max(0.0);
+    let range = (0.42 + footprint * 0.65).clamp(0.36, lighting.spot.range);
+    let intensity = controls
+        .spot_intensity
+        .clamp(lighting.spot.min_intensity, lighting.spot.max_intensity)
+        * 0.0055;
+    PointLight {
+        color: lighting.spot.color,
+        intensity,
+        range,
+        radius: lighting.spot.radius,
+        shadow_maps_enabled: false,
+        contact_shadows_enabled: false,
+        shadow_depth_bias: lighting.spot.shadow_depth_bias,
+        shadow_normal_bias: lighting.spot.shadow_normal_bias,
+        shadow_map_near_z: lighting.spot.shadow_map_near_z,
+        ..default()
+    }
+}
+
+fn spotlight_fallback_transform(controls: &ExhibitControls) -> Transform {
+    let spot = spotlight_transform(controls).translation;
+    let target = EXHIBIT_TARGET + Vec3::new(0.0, 0.035, 0.0);
+    let position = target.lerp(spot, 0.22);
+    Transform::from_translation(position)
 }

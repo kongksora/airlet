@@ -148,6 +148,14 @@ Serial edit zones:
 - Do not commit downloaded third-party model files by default.
 - It is fine to read and probe those assets locally.
 - Do not commit `target/` outputs.
+- Do not commit regenerated runtime bake outputs:
+  `assets/generated/music_box_aligned_base.*`,
+  `assets/generated/music_box_material_baked.*`, or
+  `assets/textures/procedural/*.png`.
+- Keep `assets/generated/music_box_manual_rounded_shell.glb` tracked. It is a
+  hand-edited source input for the current asset bake, not a disposable output.
+- Regenerate runtime assets after clone with
+  `uv run --project py airlet-bake-materials --manual-rounded-source assets/generated/music_box_manual_rounded_shell.glb`.
 
 ## Verification
 

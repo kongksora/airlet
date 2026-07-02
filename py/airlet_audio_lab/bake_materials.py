@@ -43,7 +43,7 @@ ROUND_WOOD_SCRIPT = Path("py/airlet_audio_lab/round_wood_shell.py")
 BEVEL_WIDTH_METERS = 0.005
 BEVEL_ANGLE_DEGREES = 90.0
 BEVEL_MERGE_DISTANCE = 1.0e-5
-LONGITUDINAL_UV_DENSITY = 2.0
+WOOD_UV_DENSITY = 1.0
 TARGET_DISPLAY_WIDTH_METERS = 0.14
 SOURCE_ALIGNED_WIDTH = 0.66793925
 APP_MODEL_SCALE = TARGET_DISPLAY_WIDTH_METERS / SOURCE_ALIGNED_WIDTH
@@ -241,6 +241,7 @@ class GltfMaterialBaker:
             "wood_mesh_names": sorted(WOOD_MESH_NAMES),
             "manual_alignment_delta": self.manual_alignment_delta,
             "split_meshes": {},
+            "winding_fixes": {},
             "material_assignments": {},
         }
         for mesh_index, mesh in enumerate(self.gltf.meshes):
@@ -259,6 +260,15 @@ class GltfMaterialBaker:
                         elif baked.material == materials["walnut_wood_cross"]:
                             split_counts["cross"] += self.gltf.accessors[baked.indices].count // 3
                 if new_primitives:
+                    signed_volume = self._mesh_signed_volume(new_primitives)
+                    if signed_volume < -1.0e-7:
+                        for primitive in new_primitives:
+                            self._flip_primitive_winding(primitive)
+                        report["winding_fixes"][str(mesh_index)] = {
+                            "mesh": mesh.name,
+                            "signed_volume_before": signed_volume,
+                            "signed_volume_after": self._mesh_signed_volume(new_primitives),
+                        }
                     mesh.primitives = new_primitives
                     report["split_meshes"][str(mesh_index)] = split_counts
             else:
@@ -280,9 +290,9 @@ class GltfMaterialBaker:
         for name, pbr in {
             "walnut_wood_radial": (0.0, 0.46, 0.48),
             "walnut_wood_tangential": (0.0, 0.48, 0.46),
-            "walnut_wood_cross": (0.0, 0.56, 0.40),
+            "walnut_wood_cross": (0.0, 0.34, 0.40),
             "aged_brass": (0.96, 0.24, 0.86),
-            "polished_steel": (0.98, 0.18, 0.78),
+            "polished_steel": (0.98, 0.12, 0.86),
             "dark_metal": (0.82, 0.54, 0.45),
         }.items():
             base = self._append_texture(f"{name}_base.png")
@@ -407,6 +417,30 @@ class GltfMaterialBaker:
         primitive.attributes.NORMAL = self._append_accessor(normals, "VEC3", ARRAY_BUFFER)
         primitive.attributes.TEXCOORD_0 = self._append_accessor(uvs, "VEC2", ARRAY_BUFFER)
         primitive.attributes.TANGENT = self._append_accessor(tangents, "VEC4", ARRAY_BUFFER)
+
+    def _mesh_signed_volume(self, primitives: list[Primitive]) -> float:
+        signed_volume = 0.0
+        for primitive in primitives:
+            positions = self._read_accessor_vec(primitive.attributes.POSITION, 3)
+            indices = self._read_indices(primitive.indices, len(positions))
+            for a, b, c in batched(indices, 3):
+                signed_volume += float(np.dot(positions[a], np.cross(positions[b], positions[c])) / 6.0)
+        return signed_volume
+
+    def _flip_primitive_winding(self, primitive: Primitive) -> None:
+        positions = self._read_accessor_vec(primitive.attributes.POSITION, 3)
+        normals = self._read_accessor_vec(primitive.attributes.NORMAL, 3)
+        uvs = self._read_accessor_vec(primitive.attributes.TEXCOORD_0, 2)
+        tangents = self._read_accessor_vec(primitive.attributes.TANGENT, 4)
+        indices = np.array(self._read_indices(primitive.indices, len(positions)), dtype=np.uint32).reshape(-1, 3)
+        indices[:, [1, 2]] = indices[:, [2, 1]]
+        normals = -normals
+        tangents[:, :3] = -tangents[:, :3]
+        tangents[:, 3] = -tangents[:, 3]
+        primitive.attributes.NORMAL = self._append_accessor(normals.astype(np.float32), "VEC3", ARRAY_BUFFER)
+        primitive.attributes.TEXCOORD_0 = self._append_accessor(uvs.astype(np.float32), "VEC2", ARRAY_BUFFER)
+        primitive.attributes.TANGENT = self._append_accessor(tangents.astype(np.float32), "VEC4", ARRAY_BUFFER)
+        primitive.indices = self._append_accessor(indices.reshape(-1).astype(np.uint32), "SCALAR", ELEMENT_ARRAY_BUFFER)
 
     def _append_accessor(self, data: np.ndarray, accessor_type: str, target: int) -> int:
         component_type = FLOAT if data.dtype == np.float32 else UNSIGNED_INT
@@ -543,16 +577,19 @@ class WoodWindow:
         return cls(
             radial_offset=(float(rng.uniform(0.10, 0.18)), float(rng.uniform(0.12, 0.22))),
             radial_scale=(
-                float(rng.uniform(0.58, 0.70)),
-                float(rng.uniform(0.30, 0.42)),
+                float(rng.uniform(0.58, 0.70) * WOOD_UV_DENSITY),
+                float(rng.uniform(0.30, 0.42) * WOOD_UV_DENSITY),
             ),
             tangential_offset=(float(rng.uniform(0.10, 0.18)), float(rng.uniform(0.12, 0.22))),
             tangential_scale=(
-                float(rng.uniform(0.58, 0.70)),
-                float(rng.uniform(0.30, 0.42)),
+                float(rng.uniform(0.58, 0.70) * WOOD_UV_DENSITY),
+                float(rng.uniform(0.30, 0.42) * WOOD_UV_DENSITY),
             ),
             cross_offset=(float(rng.uniform(0.05, 0.52)), float(rng.uniform(0.05, 0.48))),
-            cross_scale=(float(rng.uniform(0.30, 0.44)), float(rng.uniform(0.30, 0.46))),
+            cross_scale=(
+                float(rng.uniform(0.30, 0.44) * WOOD_UV_DENSITY),
+                float(rng.uniform(0.30, 0.46) * WOOD_UV_DENSITY),
+            ),
         )
 
     def radial_uv(self, uv: list[float]) -> list[float]:

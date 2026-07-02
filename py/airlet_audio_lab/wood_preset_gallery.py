@@ -14,7 +14,7 @@ from scipy.ndimage import gaussian_filter, map_coordinates
 
 DEFAULT_OUT_DIR = Path("target/wood-presets")
 TEXTURE_SIZE = 768
-ANNUAL_RING_SCALE = 2.0
+ANNUAL_RING_SCALE = 4.0
 
 
 @dataclass(frozen=True)
@@ -349,7 +349,7 @@ def _render_longitudinal(
     pores = _longitudinal_pores(size, rng, preset.pore_strength)
     checks = _longitudinal_checks(size, rng, preset.crack_strength)
 
-    slow_value = 0.47 + annual_color * (0.40 + preset.board_contrast * 0.24)
+    slow_value = 0.47 + annual_color * (0.52 + preset.board_contrast * 0.30)
     slow_value += (ring_long - 0.5) * preset.board_contrast * 0.24
     slow_value += (board - 0.5) * preset.board_contrast * 0.24
     slow_value += (ribbon - 0.5) * preset.board_contrast * 0.24
@@ -364,10 +364,10 @@ def _render_longitudinal(
     value = np.clip(value, 0.0, 1.0)
 
     base = _palette(value, preset)
-    honey_mix = np.clip((annual_color[..., None] + 0.30) * 0.20 + (board[..., None] - 0.62) * 0.16, 0.0, 0.24)
+    honey_mix = np.clip((annual_color[..., None] + 0.30) * 0.25 + (board[..., None] - 0.62) * 0.16, 0.0, 0.30)
     base = _mix(base, np.array(preset.honey), honey_mix)
-    base += np.clip(annual_color[..., None], 0.0, 1.0) * np.array([0.055, 0.028, 0.008])
-    base -= np.clip(-annual_color[..., None], 0.0, 1.0) * np.array([0.044, 0.040, 0.034])
+    base += np.clip(annual_color[..., None], 0.0, 1.0) * np.array([0.078, 0.040, 0.012])
+    base -= np.clip(-annual_color[..., None], 0.0, 1.0) * np.array([0.062, 0.056, 0.048])
     base *= 1.0 - pores[..., None] * (0.12 + preset.pore_strength * 0.18)
     base *= 1.0 - checks[..., None] * 0.18
     base *= 1.0 - dark_streaks[..., None] * (0.12 + preset.fiber_contrast * 0.12)
@@ -440,14 +440,14 @@ def _annual_ring_color_profile(volume: WoodVolume, rng: np.random.Generator) -> 
     min_pos = -4.0
     max_pos = 12.0
     knots = np.arange(min_pos, max_pos + 1.0)
-    annual_steps = rng.normal(0.0, 0.090, size=knots.shape)
+    annual_steps = rng.normal(0.0, 0.125, size=knots.shape)
     cumulative = np.cumsum(annual_steps)
     cumulative -= np.mean(cumulative)
-    cumulative = gaussian_filter(cumulative, sigma=1.15, mode="nearest")
-    local = gaussian_filter(rng.normal(0.0, 0.13, size=knots.shape), sigma=0.55, mode="nearest")
-    slow_arc = np.sin((knots * 0.32 + volume.ring_phase) * np.pi * 2.0) * 0.055
-    values = cumulative * 1.05 + local * 0.88 + slow_arc
-    values = np.clip(values, -0.52, 0.52)
+    cumulative = gaussian_filter(cumulative, sigma=1.35, mode="nearest")
+    local = gaussian_filter(rng.normal(0.0, 0.12, size=knots.shape), sigma=0.90, mode="nearest")
+    slow_arc = np.sin((knots * 0.22 + volume.ring_phase) * np.pi * 2.0) * 0.080
+    values = cumulative * 1.45 + local * 0.55 + slow_arc
+    values = np.clip(values, -0.72, 0.72)
     return AnnualRingColorProfile(knots=knots, values=values)
 
 
@@ -616,17 +616,17 @@ def _render_crosscut(
     checks = _crosscut_checks(size, rng, cycle)
     grit = _crosscut_rough_grit(size, rng)
     value = 0.52 + (rings - 0.5) * preset.board_contrast * 0.028
-    value += ring_color * (0.135 + preset.board_contrast * 0.040)
+    value += ring_color * (0.205 + preset.board_contrast * 0.055)
     value += patch * (0.125 + preset.board_contrast * 0.038)
     value += fine_cut * 0.046 + (cells - 0.5) * 0.046 + cell_walls * 0.078
     value -= boundaries * (0.150 + preset.board_contrast * 0.045)
     value -= checks * (0.150 + preset.crack_strength * 0.240)
     base = _palette(np.clip(value, 0.0, 1.0), preset)
     warm_stain = np.clip(patch[..., None] * 0.35 + checks[..., None] * 0.18, 0.0, 0.35)
-    base = _mix(base, np.array(preset.honey), np.clip((ring_color[..., None] + 0.36) * 0.045, 0.0, 0.050))
+    base = _mix(base, np.array(preset.honey), np.clip((ring_color[..., None] + 0.36) * 0.060, 0.0, 0.075))
     base = _mix(base, np.array(preset.mid) * np.array([1.12, 0.86, 0.68]), warm_stain)
-    base += np.clip(ring_color[..., None], 0.0, 1.0) * np.array([0.055, 0.025, 0.006])
-    base -= np.clip(-ring_color[..., None], 0.0, 1.0) * np.array([0.045, 0.040, 0.034])
+    base += np.clip(ring_color[..., None], 0.0, 1.0) * np.array([0.082, 0.038, 0.010])
+    base -= np.clip(-ring_color[..., None], 0.0, 1.0) * np.array([0.066, 0.058, 0.050])
     base += np.clip(patch[..., None], 0.0, 1.0) * np.array([0.045, 0.020, 0.004])
     base -= np.clip(-patch[..., None], 0.0, 1.0) * np.array([0.035, 0.030, 0.026])
     base += ray_detail[..., None] * (0.50 + preset.silk_strength) * np.array([0.120, 0.095, 0.050])
@@ -638,22 +638,22 @@ def _render_crosscut(
     base *= 1.0 - pores[..., None] * (0.78 + preset.pore_strength * 0.44)
     base += grit[..., None] * np.array([0.022, 0.016, 0.008])
     base = np.clip(base, 0.0, 1.0)
-    roughness = preset.roughness + pores * 0.30 + boundaries * 0.15 + checks * 0.22
-    roughness += cells * 0.09 + np.abs(grit) * 0.16
-    roughness += np.abs(cell_walls) * 0.09
-    roughness -= ray_detail * 0.05
-    roughness = np.clip(roughness, 0.28, 0.96)
+    roughness = preset.roughness * 0.74 + pores * 0.12 + boundaries * 0.055 + checks * 0.075
+    roughness += cells * 0.032 + np.abs(grit) * 0.055
+    roughness += np.abs(cell_walls) * 0.032
+    roughness -= ray_detail * 0.035
+    roughness = np.clip(roughness, 0.20, 0.68)
     height = (
-        (rings - 0.5) * 0.012 * preset.board_contrast
-        + boundaries * 0.055
-        + ray_detail * 0.024
-        + cells * 0.030
-        + cell_walls * 0.038
-        + grit * 0.050
-        - pores * (0.130 + preset.pore_strength * 0.085)
-        - checks * (0.080 + preset.crack_strength * 0.060)
+        (rings - 0.5) * 0.005 * preset.board_contrast
+        + boundaries * 0.020
+        + ray_detail * 0.012
+        + cells * 0.010
+        + cell_walls * 0.014
+        + grit * 0.017
+        - pores * (0.048 + preset.pore_strength * 0.030)
+        - checks * (0.028 + preset.crack_strength * 0.020)
     )
-    normal = _normal_from_height(height, strength=7.4)
+    normal = _normal_from_height(height, strength=3.2)
     preview = _preview(base, normal[..., :3], roughness, preset.gloss)
     return CrosscutRender(
         base=base,

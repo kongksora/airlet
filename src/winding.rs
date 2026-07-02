@@ -37,10 +37,7 @@ impl WindingState {
 }
 
 #[derive(Component)]
-pub struct WindingKeyPart {
-    pub normal_material: Handle<StandardMaterial>,
-    pub hover_material: Handle<StandardMaterial>,
-}
+pub struct WindingKeyPart;
 
 pub fn update_winding_interaction(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
@@ -63,25 +60,15 @@ pub fn update_winding_interaction(
 }
 
 pub fn apply_winding_visuals(
-    winding: Res<WindingState>,
     twin: Res<MusicBoxTwinState>,
     model: Res<ModelResource>,
     mut pivots: Query<&mut Transform, With<WindingKeyPivot>>,
-    mut parts: Query<(&WindingKeyPart, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
     if let Some(pose) = model.model.winding_key_pose() {
         let axis = crate::vec3(pose.axis).normalize_or(Vec3::X);
         for mut transform in &mut pivots {
             transform.rotation = Quat::from_axis_angle(axis, twin.key_degrees.to_radians());
         }
-    }
-
-    for (part, mut material) in &mut parts {
-        material.0 = if winding.hovered || winding.pressed {
-            part.hover_material.clone()
-        } else {
-            part.normal_material.clone()
-        };
     }
 }
 
