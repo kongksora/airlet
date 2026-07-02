@@ -4177,3 +4177,37 @@ Completion notes:
   `[0.495118, 0.391053, 0.190378]`.
   The rebuilt file still has clean-shell topology, while the unrebuilt file
   preserves source topology.
+
+### Round Crank Opening And Target Cleanup
+
+Purpose: clean stale manual-roundover target files and replace the rebuilt
+body shell's rectangular crank clearance with a round side-wall opening.
+
+Checklist:
+
+- [x] Remove obsolete `target/manual-roundover` screenshots, `.blend1` backups,
+  and superseded default handoff files while keeping the current before/after
+  comparison blends.
+- [x] Replace the Python-side voxel rectangular crank cutout with a Blender
+  boolean cylinder cut on the rebuilt body shell handoff.
+- [x] Regenerate the rebuilt aligned base and rebuilt handoff blend.
+- [x] Validate the rebuilt body side wall contains a circular crank opening and
+  that rebuilt/unrebuilt dimensions remain matched.
+- [x] Run Python compile and `git diff --check`.
+
+Completion notes:
+
+- `target/manual-roundover` now keeps only the active comparison files:
+  `music_box_unrebuilt_aligned_handoff.blend`,
+  `music_box_rebuilt_aligned_handoff.blend`, the unrebuilt input GLB/JSON,
+  `README.md`, and the latest round-opening diagnostic PNG.
+- The first Python-side circular panel attempt was rejected because it created
+  T-junctions/open edges. The final implementation leaves the aligned base as a
+  clean closed shell and applies a Blender `BOOLEAN` cylinder cut in
+  `build_manual_bevel_handoff.py` when generating the manual handoff blend.
+- Updated rebuilt handoff topology after the Blender boolean: `Mesh.008` has
+  `200` vertices / `190` polygons, with `0` boundary edges and `0` overused
+  edges. Its dimensions remain matched with the unrebuilt body:
+  `[0.495118, 0.391053, 0.190378]`.
+- Round-opening diagnostic:
+  `target/manual-roundover/handoff_rebuilt_crank_round_opening.png`.

@@ -309,19 +309,9 @@ def body_proxy(
     zi0, zi1 = z0 + wall, z1 - wall
     yi = y0 + floor
     y_top_split = max(yi, y1 - bevel_width * 1.35)
-    hole = None
-    if crank_center is not None:
-        hole_half_y = min(height * 0.38, max(bevel_width * 2.1, height * 0.24))
-        hole_half_z = min(depth * 0.28, max(bevel_width * 2.8, depth * 0.16))
-        hole = (
-            float(np.clip(crank_center[1] - hole_half_y, yi, y_top_split)),
-            float(np.clip(crank_center[1] + hole_half_y, yi, y1)),
-            float(np.clip(crank_center[2] - hole_half_z, z0 + wall * 0.55, z1 - wall * 0.55)),
-            float(np.clip(crank_center[2] + hole_half_z, z0 + wall * 0.55, z1 - wall * 0.55)),
-        )
     x = sorted_unique([x0, xi0, xi1, x1])
-    y = sorted_unique([y0, yi, y_top_split, y1] + ([] if hole is None else [hole[0], hole[1]]))
-    z = sorted_unique([z0, zi0, zi1, z1] + ([] if hole is None else [hole[2], hole[3]]))
+    y = sorted_unique([y0, yi, y_top_split, y1])
+    z = sorted_unique([z0, zi0, zi1, z1])
     solid = {
         (ix, iy, iz)
         for ix in range(len(x) - 1)
@@ -335,12 +325,6 @@ def body_proxy(
             or z_cell_center(z, iz) > zi1
         )
     }
-    if hole is not None:
-        solid = {
-            cell
-            for cell in solid
-            if not is_crank_opening_cell(cell, x, y, z, x1, hole)
-        }
     return voxel_boundary_mesh(x, y, z, solid, name)
 
 
@@ -362,26 +346,6 @@ def y_cell_center(values: list[float], index: int) -> float:
 
 def z_cell_center(values: list[float], index: int) -> float:
     return (values[index] + values[index + 1]) * 0.5
-
-
-def is_crank_opening_cell(
-    cell: tuple[int, int, int],
-    x: list[float],
-    y: list[float],
-    z: list[float],
-    side_x: float,
-    hole: tuple[float, float, float, float],
-) -> bool:
-    ix, iy, iz = cell
-    center_x = x_cell_center(x, ix)
-    center_y = y_cell_center(y, iy)
-    center_z = z_cell_center(z, iz)
-    hole_y0, hole_y1, hole_z0, hole_z1 = hole
-    return (
-        center_x > side_x - (x[-1] - x[-2]) * 0.75
-        and hole_y0 < center_y < hole_y1
-        and hole_z0 < center_z < hole_z1
-    )
 
 
 def voxel_boundary_mesh(

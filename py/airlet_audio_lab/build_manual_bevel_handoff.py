@@ -1,32 +1,44 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
+import tomllib
 
 
 WOOD_MESH_NAMES = {"Mesh", "Mesh.008"}
 DEFAULT_INPUT = Path("assets/generated/music_box_aligned_base.glb")
 DEFAULT_OUTPUT = Path("target/manual-roundover/music_box_manual_bevel_handoff.blend")
+DEFAULT_SPEC = Path("assets/models/converted/spec.toml")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build a Blender-native manual bevel handoff.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--spec", type=Path, default=DEFAULT_SPEC)
     args = _parse_blender_args(parser)
 
     import bpy
 
+    spec = tomllib.loads(args.spec.read_text(encoding="utf-8"))
     clear_scene(bpy)
     bpy.ops.import_scene.gltf(filepath=str(args.input))
 
     baked: list[tuple[str, int, int]] = []
+    body_obj = None
     for obj in bpy.context.scene.objects:
         if obj.type != "MESH" or obj.data.name not in WOOD_MESH_NAMES:
             continue
         bake_object_mesh_to_world_space(bpy, obj)
+        if obj.data.name == "Mesh.008":
+            body_obj = obj
+            cut_round_crank_opening(bpy, obj, spec)
         record_mesh_metadata(obj)
         baked.append((obj.data.name, len(obj.data.vertices), len(obj.data.polygons)))
+
+    if body_obj is None:
+        raise SystemExit("expected to find body mesh Mesh.008")
 
     baked_names = {name for name, _, _ in baked}
     if baked_names != WOOD_MESH_NAMES:
@@ -78,6 +90,54 @@ def record_mesh_metadata(obj) -> None:
     obj["airlet_handoff_dimensions"] = tuple(
         float(bounds_max[index] - bounds_min[index]) for index in range(3)
     )
+
+
+def cut_round_crank_opening(bpy, obj, spec: dict) -> None:
+    from mathutils import Matrix
+
+    winding = spec.get("winding_key")
+    if not winding:
+        return
+    bounds_min, bounds_max = object_bounds(obj)
+    width = bounds_max[0] - bounds_min[0]
+    depth = bounds_max[1] - bounds_min[1]
+    height = bounds_max[2] - bounds_min[2]
+    wall = min(max(width * 0.13, depth * 0.13), width * 0.28, depth * 0.28)
+    radius = min(depth * 0.08, height * 0.18, max(height * 0.12, wall * 0.36))
+    pivot = runtime_point_to_blender(tuple(float(value) for value in winding["pivot"]))
+    center = (
+        bounds_max[0] - wall * 0.5,
+        float(min(max(pivot[1], bounds_min[1] + radius), bounds_max[1] - radius)),
+        float(min(max(pivot[2], bounds_min[2] + radius), bounds_max[2] - radius)),
+    )
+    bpy.ops.mesh.primitive_cylinder_add(
+        vertices=64,
+        radius=radius,
+        depth=wall * 3.0,
+        end_fill_type="NGON",
+        location=center,
+        rotation=(0.0, math.pi * 0.5, 0.0),
+    )
+    cutter = bpy.context.object
+    cutter.name = "Airlet round crank opening cutter"
+    boolean = obj.modifiers.new(name="Airlet round crank opening", type="BOOLEAN")
+    boolean.operation = "DIFFERENCE"
+    boolean.object = cutter
+    boolean.solver = "EXACT"
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.modifier_apply(modifier=boolean.name)
+    obj.matrix_world = Matrix.Identity(4)
+    bpy.data.objects.remove(cutter, do_unlink=True)
+    obj["airlet_crank_opening_kind"] = "blender_boolean_cylinder"
+    obj["airlet_crank_opening_center"] = tuple(float(value) for value in center)
+    obj["airlet_crank_opening_radius"] = float(radius)
+
+
+def runtime_point_to_blender(point: tuple[float, float, float]) -> tuple[float, float, float]:
+    x, y, z = point
+    return (x, -z, y)
 
 
 def clear_scene(bpy) -> None:
