@@ -56,7 +56,14 @@ def main() -> None:
 
     for mesh_index in spec["closed_model"]["mesh_indices"]:
         if mesh_index in WOOD_MESHES and not args.preserve_source_wood:
-            mesh = clean_wood_mesh(mesh_index, source, basis, args.wood_bevel_width, crank_center)
+            mesh = clean_wood_mesh(
+                mesh_index,
+                source,
+                basis,
+                interior_alignment,
+                args.wood_bevel_width,
+                crank_center,
+            )
         else:
             mesh = source.aligned_mesh(mesh_index, basis, interior_alignment)
         mesh.metadata["name"] = source.mesh_name(mesh_index)
@@ -250,10 +257,11 @@ def clean_wood_mesh(
     mesh_index: int,
     source: SourceGltf,
     basis: Basis,
+    interior_alignment: InteriorAlignment,
     bevel_width: float,
     crank_center: np.ndarray | None,
 ) -> trimesh.Trimesh:
-    measured = source.aligned_mesh(mesh_index, basis)
+    measured = source.aligned_mesh(mesh_index, basis, interior_alignment)
     bounds_min, bounds_max = measured.bounds
     if mesh_index == 0:
         return lid_proxy(bounds_min, bounds_max, bevel_width, source.mesh_name(mesh_index))
@@ -446,7 +454,14 @@ def aligned_spec_text(
     points = []
     for mesh_index in closed["mesh_indices"]:
         if mesh_index in WOOD_MESHES and not preserve_source_wood:
-            mesh = clean_wood_mesh(mesh_index, source, basis, wood_bevel_width, crank_center)
+            mesh = clean_wood_mesh(
+                mesh_index,
+                source,
+                basis,
+                interior_alignment,
+                wood_bevel_width,
+                crank_center,
+            )
         else:
             mesh = source.aligned_mesh(mesh_index, basis, interior_alignment)
         points.append(np.asarray(mesh.vertices, dtype=np.float32))

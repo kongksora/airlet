@@ -4147,3 +4147,33 @@ Completion notes:
   `114` vertices / `224` polygons; both rebuilt wood meshes have no boundary or
   overused edges.
 - Both blends validate bottom center at `[0.0, 0.0, 0.0]`.
+
+### Rebuilt Shell Bounds Alignment Fix
+
+Purpose: fix the size mismatch found by comparing the unrebuilt and rebuilt
+handoff files. The unrebuilt export used the fully aligned wood coordinates
+after `interior_alignment`, but the rebuilt clean shell measured wood bounds
+from the basis-only source coordinates. That made rebuilt lid/body dimensions
+larger than the already-correct unrebuilt source.
+
+Checklist:
+
+- [x] Make `clean_wood_mesh` measure source wood bounds after
+  `interior_alignment`, matching the unrebuilt path.
+- [x] Regenerate the rebuilt aligned base and rebuilt handoff blend.
+- [x] Validate rebuilt wood dimensions now match the unrebuilt dimensions.
+- [x] Run Python compile and `git diff --check`.
+
+Completion notes:
+
+- Root cause: `clean_wood_mesh` measured bounds from
+  `source.aligned_mesh(mesh_index, basis)`, while the unrebuilt comparison path
+  and all non-wood meshes used `source.aligned_mesh(mesh_index, basis,
+  interior_alignment)`.
+- Before the fix, rebuilt wood dimensions were approximately `0.525 x 0.429`
+  horizontally while unrebuilt was approximately `0.495 x 0.391`.
+- After the fix, both handoff blends report matching wood dimensions:
+  `Mesh` `[0.495116, 0.391053, 0.083748]`; `Mesh.008`
+  `[0.495118, 0.391053, 0.190378]`.
+  The rebuilt file still has clean-shell topology, while the unrebuilt file
+  preserves source topology.
