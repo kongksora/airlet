@@ -4113,3 +4113,37 @@ Completion notes:
   `target/manual-roundover/handoff_aligned_full_top.png`.
 - Validation reports bottom center `[0.0, 0.0, 0.0]`; wood meshes have
   `aligned_base_world_space` metadata and no boundary or overused edges.
+
+### Manual Handoff Before/After Blend Pair
+
+Purpose: provide two Blender files for direct manual comparison: one generated
+from the original aligned source wood before clean shell reconstruction, and
+one generated from the rebuilt clean shell. This removes ambiguity when checking
+whether a lid/body offset or shape issue comes from the original aligned asset
+or from the reconstruction step.
+
+Checklist:
+
+- [x] Add a repeatable `--preserve-source-wood` export mode to the aligned base
+  builder.
+- [x] Generate an unrebuilt aligned input GLB under `target/manual-roundover/`.
+- [x] Generate `music_box_unrebuilt_aligned_handoff.blend`.
+- [x] Generate `music_box_rebuilt_aligned_handoff.blend`.
+- [x] Validate both blends have bottom-center origin placement and record wood
+  mesh topology counts.
+
+Completion notes:
+
+- Unrebuilt comparison input:
+  `target/manual-roundover/music_box_unrebuilt_aligned_handoff_input.glb`.
+- Unrebuilt Blender file:
+  `target/manual-roundover/music_box_unrebuilt_aligned_handoff.blend`.
+- Rebuilt Blender file:
+  `target/manual-roundover/music_box_rebuilt_aligned_handoff.blend`.
+- Unrebuilt topology: `Mesh` has `16` vertices / `26` polygons with `4`
+  boundary edges; `Mesh.008` has `440` vertices / `876` polygons with no
+  boundary or overused edges.
+- Rebuilt topology: `Mesh` has `48` vertices / `92` polygons; `Mesh.008` has
+  `114` vertices / `224` polygons; both rebuilt wood meshes have no boundary or
+  overused edges.
+- Both blends validate bottom center at `[0.0, 0.0, 0.0]`.

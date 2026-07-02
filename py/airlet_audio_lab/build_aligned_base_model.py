@@ -37,6 +37,11 @@ def main() -> None:
         default=0.023854973,
         help="Model-space bevel target used to size clean proxy wall thickness.",
     )
+    parser.add_argument(
+        "--preserve-source-wood",
+        action="store_true",
+        help="Keep source wood meshes instead of replacing them with clean rebuilt shell proxies.",
+    )
     args = parser.parse_args()
 
     spec_path = args.source_spec if args.source_spec.exists() else args.spec
@@ -50,11 +55,10 @@ def main() -> None:
     scene = trimesh.Scene()
 
     for mesh_index in spec["closed_model"]["mesh_indices"]:
-        mesh = (
-            clean_wood_mesh(mesh_index, source, basis, args.wood_bevel_width, crank_center)
-            if mesh_index in WOOD_MESHES
-            else source.aligned_mesh(mesh_index, basis, interior_alignment)
-        )
+        if mesh_index in WOOD_MESHES and not args.preserve_source_wood:
+            mesh = clean_wood_mesh(mesh_index, source, basis, args.wood_bevel_width, crank_center)
+        else:
+            mesh = source.aligned_mesh(mesh_index, basis, interior_alignment)
         mesh.metadata["name"] = source.mesh_name(mesh_index)
         scene.add_geometry(mesh, geom_name=source.mesh_name(mesh_index), node_name=source.mesh_name(mesh_index))
         mesh_points[mesh_index] = np.asarray(mesh.vertices, dtype=np.float32)
@@ -70,6 +74,7 @@ def main() -> None:
         args.source,
         args.wood_bevel_width,
         interior_alignment,
+        args.preserve_source_wood,
     )
     if args.write_spec:
         args.spec.write_text(generated_spec, encoding="utf-8")
@@ -87,6 +92,7 @@ def main() -> None:
         "wood_proxy_meshes": {
             str(index): mesh_health(mesh_points[index], source.mesh_name(index)) for index in sorted(WOOD_MESHES)
         },
+        "preserved_source_wood": args.preserve_source_wood,
         "basis": {
             "right": basis.right.astype(float).tolist(),
             "up": basis.up.astype(float).tolist(),
@@ -431,6 +437,7 @@ def aligned_spec_text(
     source_path: Path,
     wood_bevel_width: float,
     interior_alignment: InteriorAlignment,
+    preserve_source_wood: bool = False,
 ) -> str:
     closed = spec["closed_model"]
     source = SourceGltf(source_path)
@@ -438,7 +445,7 @@ def aligned_spec_text(
     crank_center = interior_alignment.point(winding_pivot) if winding_pivot is not None else None
     points = []
     for mesh_index in closed["mesh_indices"]:
-        if mesh_index in WOOD_MESHES:
+        if mesh_index in WOOD_MESHES and not preserve_source_wood:
             mesh = clean_wood_mesh(mesh_index, source, basis, wood_bevel_width, crank_center)
         else:
             mesh = source.aligned_mesh(mesh_index, basis, interior_alignment)
