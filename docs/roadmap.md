@@ -4211,3 +4211,40 @@ Completion notes:
   `[0.495118, 0.391053, 0.190378]`.
 - Round-opening diagnostic:
   `target/manual-roundover/handoff_rebuilt_crank_round_opening.png`.
+
+### Manual Rounded Shell Bake
+
+Purpose: consume the user-edited
+`target/manual-roundover/music_box_rebuilt_manual_rounded.blend` as the hand
+rounded wood shell, export it to GLB, and bake final walnut materials from that
+manual source.
+
+Checklist:
+
+- [x] Validate the manual rounded `.blend` keeps `Mesh` and `Mesh.008` names,
+  closed topology, and bottom-center origin placement.
+- [x] Export the full manual rounded scene to
+  `assets/generated/music_box_manual_rounded_shell.glb`.
+- [x] Run `airlet-bake-materials --manual-rounded-source` against the exported
+  GLB and update the final baked asset/report.
+- [x] Clean stale manual-roundover backup files and update the handoff README
+  to point to the current rebuilt/unrebuilt comparison files.
+- [x] Run Python compile and `git diff --check`.
+
+Completion notes:
+
+- Manual rounded input:
+  `target/manual-roundover/music_box_rebuilt_manual_rounded.blend`.
+- Exported manual rounded source:
+  `assets/generated/music_box_manual_rounded_shell.glb`.
+- Final baked asset:
+  `assets/generated/music_box_material_baked.glb`.
+- Bake report source is `assets/generated/music_box_manual_rounded_shell.glb`;
+  manual alignment delta is recorded in
+  `assets/generated/music_box_material_baked.json`.
+- Exported and baked wood topology validates closed: `Mesh` has `416` vertices /
+  `828` faces; `Mesh.008` has `441` vertices / `882` faces; both report
+  `0` boundary edges and `0` overused edges.
+- Bevy screenshot smoke passed with
+  `AIRLET_SCREENSHOT=target/manual-roundover/manual_rounded_app_smoke.png cargo run`;
+  ImageMagick reported `1280x800`, mean `0.056223`, min `0`, max `1`.

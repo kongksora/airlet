@@ -1,4 +1,9 @@
 {
+  "manual_alignment_delta": [
+    -0.007200032472610474,
+    -1.1295918226242065,
+    -1.3802073001861572
+  ],
   "material_assignments": {
     "1": "aged_brass",
     "10": "aged_brass",
@@ -35,17 +40,17 @@
     "9": "dark_metal"
   },
   "output": "assets/generated/music_box_material_baked.glb",
-  "source": "assets/generated/music_box_rounded_shell.glb",
+  "source": "assets/generated/music_box_manual_rounded_shell.glb",
   "split_meshes": {
     "0": {
-      "cross": 168,
-      "radial": 142,
-      "tangential": 182
+      "cross": 253,
+      "radial": 276,
+      "tangential": 299
     },
     "8": {
-      "cross": 184,
-      "radial": 166,
-      "tangential": 194
+      "cross": 340,
+      "radial": 271,
+      "tangential": 271
     }
   },
   "wood_mesh_names": [
